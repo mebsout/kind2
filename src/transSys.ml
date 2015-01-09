@@ -21,6 +21,7 @@ open Lib
 type source = 
   | Lustre of LustreNode.t list 
   | Native
+  | Horn
 
 (* Global is_init state var *)
 let init_flag_svar =

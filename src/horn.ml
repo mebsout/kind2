@@ -20,6 +20,7 @@ open Lib
 
 module SVS = StateVar.StateVarSet
 
+module Conv = SMTExpr.Converter (Z3Driver)
 
 let s_set_info = HString.mk_hstring "set-info"
 
@@ -175,7 +176,7 @@ let clause_of_expr expr =
             (Invalid_argument 
                (Format.asprintf 
                   "Expression is not a horn clause: %a"
-                  SMTExpr.pp_print_expr expr)))
+                  Conv.pp_print_expr expr)))
 
     | _ -> 
 
@@ -183,7 +184,7 @@ let clause_of_expr expr =
         (Invalid_argument 
            (Format.asprintf 
               "Expression is not a horn clause: %a"
-              SMTExpr.pp_print_expr expr))
+              Conv.pp_print_expr expr))
 
 (*
 
@@ -207,14 +208,12 @@ let rec polarity_of_pred sym_p polarity expr = match Term.destruct expr with
        List.map 
          (function t -> match Term.destruct t with 
             | Term.T.Var v -> v
-            | _ -> 
+            | _ ->
               raise 
-                 (Invalid_argument 
-                    (Format.asprintf 
-                       "Arguments of predicate must be variables %a"
-                       Term.pp_print_term t)))
-           a)
-      
+                (Invalid_argument "Arguments of predicate must be variables.")
+         ) a
+      )
+
   | Term.T.App (s, [e]) when s == Symbol.s_not -> 
     polarity_of_pred sym_p (not polarity) e
 
@@ -289,12 +288,12 @@ let temp_vars_to_consts term =
 
 let next_fresh_state_var_id = ref 1
 
-let mk_fresh_state_var var_type = 
+let mk_fresh_state_var scope var_type = 
 
   let res = 
     StateVar.mk_state_var 
       (Format.sprintf "I%d" !next_fresh_state_var_id)
-      true
+      scope
       var_type
   in
 
@@ -304,26 +303,29 @@ let mk_fresh_state_var var_type =
 
 
 (* Bind each temporary variable to a fresh state variable *)
-let temp_vars_to_state_vars term = 
-
+let temp_vars_to_state_vars scope term = 
+  (* Format.eprintf "TEMP VARS TERM : %a@." Term.pp_print_term term; *)
   let vars = temp_vars_of_term term in
-
+  (* List.iter (Format.eprintf "TEMP VARS = %a@." Var.pp_print_var) vars; *)
+  
   let _, state_vars = 
     List.fold_left
       (fun (i, a) v -> 
          (succ i,
           Term.mk_var
             (Var.mk_state_var_instance
-               (mk_fresh_state_var (Var.type_of_var v))
+               (mk_fresh_state_var scope (Var.type_of_var v))
                Numeral.zero) :: a))
       (1, [])
       vars
   in
   
-  Term.mk_let 
+  let t =Term.mk_let 
     (List.combine vars (List.rev state_vars))
     term
-       
+  in
+  (* Format.eprintf "RES TEMP VARS : %a@." Term.pp_print_term t; *)
+  t
 
 let unlet_term term = Term.construct (Term.eval_t (fun t _ -> t) term)
 
@@ -343,10 +345,14 @@ let rec let_for_args accum = function
   | [] -> List.rev accum
 
   (* Term without equations *)
-  | (t, []) :: tl -> let_for_args (t :: accum) tl
+  | (t, []) :: tl ->
+    (* Format.eprintf "term wo eq %a @." Term.pp_print_term t; *)
+    let_for_args (t :: accum) tl
 
   (* Add term with let binding to accumulator *)
-  | (t, e) :: tl -> let_for_args (Term.mk_let e t :: accum) tl
+  | (t, e) :: tl ->
+    (* Format.eprintf "term with eq %a, let [%a])@." Term.pp_print_term t Term.pp_print_term (Term.mk_let e t); *)
+    let_for_args (Term.mk_let e t :: accum) tl
 
   (* Lists must be of equal length *)
   | _ -> raise (Invalid_argument "let_for_args")
@@ -390,7 +396,10 @@ let eq_to_let state_vars term accum = match term with
         (Term.construct term, [(v1, Term.mk_var v2)])
         
       (* Other equation, add let binding for collected equations *)
-      | _ -> (Term.mk_eq (let_for_args [] accum), [])
+      | _ ->
+        (* Format.eprintf "lfa accum = %d@." (List.length accum); *)
+        (* List.iter (fun (t, e) -> Format.eprintf "%a@." Term.pp_print_term (Term.mk_let e t)) accum; *)
+        (Term.mk_eq (let_for_args [] accum), [])
         
     )
 
@@ -421,7 +430,8 @@ let solve_eqs state_vars term =
       | t, e -> Term.mk_let e t)
                 
 
-let add_expr_to_trans_sys transSys literals vars_0 vars_1 var_pos var_neg = 
+let add_horn (init, trans, props) scope
+    literals vars_0 vars_1 var_pos var_neg = 
 
   let state_vars = 
     List.fold_left
@@ -451,14 +461,19 @@ let add_expr_to_trans_sys transSys literals vars_0 vars_1 var_pos var_neg =
       let term = 
         unlet_term
           (temp_vars_to_state_vars
+             scope
              (Term.mk_let 
                 (List.combine var_neg (List.map Term.mk_var vars_0))
-                (Term.mk_or literals)))
+                (Term.negate (Term.mk_and (List.map Term.negate literals)))))
+                (* (Term.mk_or literals))) *)
       in
 
+      (* Format.eprintf "PROP : %a@." Term.pp_print_term term; *)
       let term' = if true then solve_eqs state_vars term else term in
-
-      transSys.TransSys.props <- ("P", term') :: transSys.TransSys.props
+      (* Format.eprintf "PROP afeter solver : %a@." Term.pp_print_term term'; *)
+      
+      init, trans,
+      ("P", TermLib.PropAnnot Lib.dummy_pos, term') :: props
 
 
     (* Predicate occurs only positive: initial state constraint
@@ -471,14 +486,37 @@ let add_expr_to_trans_sys transSys literals vars_0 vars_1 var_pos var_neg =
       let term = 
         unlet_term
           (temp_vars_to_state_vars
+             scope
              (Term.mk_let 
                 (List.combine var_pos (List.map Term.mk_var vars_0))
                 (Term.mk_and (List.map Term.negate literals))))
       in
 
+      (* Format.eprintf "INIT : %a@." Term.pp_print_term term; *)
       let term' = if true then solve_eqs state_vars term else term in
+      (* Format.eprintf "INIT afeter solver : %a@." Term.pp_print_term term'; *)
 
-      transSys.TransSys.init_constr <- term' :: transSys.TransSys.init_constr
+      (* Symbol for initial state constraint for node *)
+      let init_uf_symbol = 
+        UfSymbol.mk_uf_symbol
+          (* Name of symbol *)
+          LustreIdent.init_uf_string
+          (* Types of variables in the signature *)
+          (List.map Var.type_of_var var_pos)
+          (* Symbol is a predicate *)
+          Type.t_bool
+      in
+
+      let pred_def_init = 
+        (* Name of symbol *)
+        (init_uf_symbol,
+         ((* Init flag? *)
+           (* [ TransSys.init_flag_var TransSys.init_base ] @ *)
+           vars_0,
+           term'))
+      in
+      
+      pred_def_init :: init, trans, props
 
 
     (* Predicate occurs positive and negative: transition relation
@@ -491,6 +529,7 @@ let add_expr_to_trans_sys transSys literals vars_0 vars_1 var_pos var_neg =
       let term = 
         unlet_term
           (temp_vars_to_state_vars
+             scope
              (Term.mk_let 
                 (List.combine var_neg (List.map Term.mk_var vars_0))
                 (Term.mk_let 
@@ -500,153 +539,180 @@ let add_expr_to_trans_sys transSys literals vars_0 vars_1 var_pos var_neg =
 
       let term' = if true then solve_eqs state_vars term else term in
 
-      transSys.TransSys.constr_constr <- term' :: transSys.TransSys.constr_constr
+
+      (* Symbol for transition relation for node *)
+      let trans_uf_symbol = 
+        UfSymbol.mk_uf_symbol
+          (* Name of symbol *)
+          LustreIdent.trans_uf_string
+          (* Types of variables in the signature *)
+          (List.map Var.type_of_var (var_neg @ var_pos))
+          (* Symbol is a predicate *)
+          Type.t_bool
+      in
+
+      let pred_def_trans = 
+        (trans_uf_symbol,
+         ((* Init flag. *)
+          (* [ TransSys.init_flag_var TransSys.trans_base ] @ *)
+          vars_0 @ vars_1,
+          term'))
+      in
+
+      init, pred_def_trans :: trans, props
 
 
-let rec parse sym_p_opt lexbuf transSys = 
+let rec parse acc sym_p_opt lexbuf = 
 
   (* Parse S-expression *)
-  match 
-    
-    (try
+  match  SExprParser.sexp_opt SExprLexer.main lexbuf with 
+
+  | None ->
+    (match acc with
+     (* Construct transition system from gathered information *)
+     | [init], [trans], props ->
        
-       Some (SExprParser.sexp SExprLexer.main lexbuf) 
+       let state_vars = match sym_p_opt with
+         | None -> []
+         | Some (_, vars, _) ->
+           let svs = List.fold_left
+             (fun a e -> SVS.add e a)
+             SVS.empty
+             (List.map Var.state_var_of_state_var_instance vars) in
+           SVS.elements svs
+       in
+
+       TransSys.mk_trans_sys [] (* scope *) state_vars
+         init trans [] props TransSys.Horn
          
-     with End_of_file -> None)
+     | _ -> assert false)
+    
+  | Some s -> match s with 
 
-  with 
+    (* (set-info ...) *)
+    | HStringSExpr.List (HStringSExpr.Atom s :: _) when s == s_set_info -> 
 
-    | None -> transSys
+      (* Skip *)
+      parse acc sym_p_opt lexbuf
 
-    | Some s -> match s with 
+    (* (set-logic HORN) *)
+    | HStringSExpr.List [HStringSExpr.Atom s; HStringSExpr.Atom l]
+      when s == s_set_logic && l == s_horn -> 
 
-      (* (set-info ...) *)
-      | HStringSExpr.List (HStringSExpr.Atom s :: _) when s == s_set_info -> 
-        
-        (* Skip *)
-        parse sym_p_opt lexbuf transSys
+      (* Skip *)
+      parse acc sym_p_opt lexbuf
 
-      (* (set-logic HORN) *)
-      | HStringSExpr.List [HStringSExpr.Atom s; HStringSExpr.Atom l]
-        when s == s_set_logic && l == s_horn -> 
+    (* (set-logic ...) *)
+    | HStringSExpr.List [HStringSExpr.Atom s; e] when s == s_set_logic -> 
 
-        (* Skip *)
-        parse sym_p_opt lexbuf transSys
+      raise 
+        (Failure 
+           (Format.asprintf 
+              "@[<hv>Invalid logic %a, must be HORN" 
+              HStringSExpr.pp_print_sexpr e))
 
-      (* (set-logic ...) *)
-      | HStringSExpr.List [HStringSExpr.Atom s; e] when s == s_set_logic -> 
+    (* (declare-fun p a r) *)
+    | HStringSExpr.List 
+        [HStringSExpr.Atom s; 
+         HStringSExpr.Atom p; 
+         HStringSExpr.List a; 
+         (HStringSExpr.Atom _ as r)]
+      when s == s_declare_fun && p == s_pred -> 
 
-        raise 
-          (Failure 
-             (Format.asprintf 
-                "@[<hv>Invalid logic %a, must be HORN" 
-                HStringSExpr.pp_print_sexpr e))
+      (* Types of argument of monolithic predicate *)
+      let arg_types = List.map Conv.type_of_string_sexpr a in
 
-      (* (declare-fun p a r) *)
-      | HStringSExpr.List 
-          [HStringSExpr.Atom s; 
-           HStringSExpr.Atom p; 
-           HStringSExpr.List a; 
-           (HStringSExpr.Atom _ as r)]
-        when s == s_declare_fun && p == s_pred -> 
+      (* Types of result of monolithic predicate *)
+      let res_type = Conv.type_of_string_sexpr r in
 
-        (* Types of argument of monolithic predicate *)
-        let arg_types = List.map SMTExpr.type_of_string_sexpr a in
+      (* Declare predicate *)
+      let sym_p = 
+        Symbol.mk_symbol 
+          (`UF 
+             (UfSymbol.mk_uf_symbol
+                (HString.string_of_hstring p) 
+                arg_types
+                res_type))
+      in
 
-        (* Types of result of monolithic predicate *)
-        let res_type = SMTExpr.type_of_string_sexpr r in
+      let _, vars_0, vars_1 =
+        List.fold_left 
+          (fun (i, vars_0, vars_1) t -> 
 
-        (* Declare predicate *)
-        let sym_p = 
-          Symbol.mk_symbol 
-            (`UF 
-               (UfSymbol.mk_uf_symbol
-                  (HString.string_of_hstring p) 
-                  arg_types 
-                  res_type))
-        in
+             let sv = 
+               StateVar.mk_state_var
+                 (Format.sprintf "Y%d" i)
+                 [] (* scope? *)
+                 t
+             in
 
-        let _, vars_0, vars_1 =
-          List.fold_left 
-            (fun (i, vars_0, vars_1) t -> 
-               
-               let sv = 
-                 StateVar.mk_state_var
-                   (Format.sprintf "Y%d" i)
-                   true
-                   t
-               in
-               
-               (succ i, 
-                (Var.mk_state_var_instance sv Numeral.zero) :: vars_0, 
-                (Var.mk_state_var_instance sv Numeral.one) :: vars_1))
-            (1, [], [])
-            arg_types
-        in
+             (succ i, 
+              (Var.mk_state_var_instance sv Numeral.zero) :: vars_0, 
+              (Var.mk_state_var_instance sv Numeral.one) :: vars_1))
+          (1, [], [])
+          arg_types
+      in
 
-        (* Continue *)
-        parse 
-          (Some (sym_p, List.rev vars_0, List.rev vars_1)) 
-          lexbuf 
-          transSys
+      (* Continue *)
+      parse acc (Some (sym_p, List.rev vars_0, List.rev vars_1)) lexbuf
 
-      (* (declare-fun ...) *)
-      | HStringSExpr.List (HStringSExpr.Atom s :: e :: _) 
-        when s == s_declare_fun -> 
+    (* (declare-fun ...) *)
+    | HStringSExpr.List (HStringSExpr.Atom s :: e :: _) 
+      when s == s_declare_fun -> 
 
-        raise 
-          (Failure 
-             (Format.asprintf 
-                "@[<hv>Invalid predicate declaration %a, only the monolithic predicate %a allowed@]" 
-                HStringSExpr.pp_print_sexpr e
-                HString.pp_print_hstring s_pred))
+      raise 
+        (Failure 
+           (Format.asprintf 
+              "@[<hv>Invalid predicate declaration %a, only the monolithic \
+               predicate %a allowed@]" 
+              HStringSExpr.pp_print_sexpr e
+              HString.pp_print_hstring s_pred))
 
-      (* (assert ...) *)
-      | HStringSExpr.List [HStringSExpr.Atom s; e] when s == s_assert -> 
+    (* (assert ...) *)
+    | HStringSExpr.List [HStringSExpr.Atom s; e] when s == s_assert -> 
 
-        (match sym_p_opt with 
+      (match sym_p_opt with 
 
-          | None -> 
+       | None -> 
 
-            raise 
-              (Failure 
-                 (Format.asprintf 
-                    "Predicate %a must be declared before assert"
-                    HString.pp_print_hstring s_pred))
+         raise 
+           (Failure 
+              (Format.asprintf 
+                 "Predicate %a must be declared before assert"
+                 HString.pp_print_hstring s_pred))
 
-          | Some (sym_p, vars_0, vars_1) -> 
+       | Some (sym_p, vars_0, vars_1) -> 
 
-            let expr = SMTExpr.expr_of_string_sexpr e in
+         (* Format.eprintf "SEXPR: %a@." HStringSExpr.pp_print_sexpr e; *)
 
-            let clause = clause_of_expr expr in
+         let expr = Conv.expr_of_string_sexpr e in
 
-            let var_pos, var_neg, clause' = classify_clause sym_p clause in
+         (* Format.eprintf "EXPR: %a@." Term.pp_print_term expr; *)
+         let clause = clause_of_expr expr in
+         (* List.iter (Format.eprintf " - CJ CLAUSE: %a@." Term.pp_print_term) clause; *)
+         
+         let var_pos, var_neg, clause' = classify_clause sym_p clause in
 
-            add_expr_to_trans_sys
-              transSys 
-              clause' 
-              vars_0 
-              vars_1 
-              var_pos 
-              var_neg;
+         let acc = add_horn acc [] (* scope? *)
+             clause' vars_0 vars_1 var_pos var_neg in
 
          (* Continue *)
-         parse sym_p_opt lexbuf transSys)
+         parse acc sym_p_opt lexbuf)
 
 
-      (* (check-sat) *)
-      | HStringSExpr.List [HStringSExpr.Atom s] when s == s_check_sat -> 
+    (* (check-sat) *)
+    | HStringSExpr.List [HStringSExpr.Atom s] when s == s_check_sat -> 
 
-        (* Skip *)
-        parse sym_p_opt lexbuf transSys
+      (* Skip *)
+      parse acc sym_p_opt lexbuf
 
-      | e -> 
+    | e -> 
 
-        raise 
-          (Failure 
-             (Format.asprintf 
-                "@[<hv>Unexpected S-expression@ @[<hv 1>%a@]@]" 
-                HStringSExpr.pp_print_sexpr e))
+      raise 
+        (Failure 
+           (Format.asprintf 
+              "@[<hv>Unexpected S-expression@ @[<hv 1>%a@]@]" 
+              HStringSExpr.pp_print_sexpr e))
 
 
 (* Parse SMTLIB2 Horn format from channel *)
@@ -655,7 +721,7 @@ let of_channel in_ch =
   (* Initialise buffer for lexing *)
   let lexbuf = Lexing.from_channel in_ch in
 
-  parse None lexbuf TransSys.empty
+  parse ([], [], []) None lexbuf
 
 
 (* Parse SMTLIB2 Horn format from file *)
@@ -667,6 +733,11 @@ let of_file filename =
 
   let transSys = of_channel in_ch in
 
+  (* Format.eprintf "------- TRANSITION SYSTEM ---------\n\n %a@." *)
+  (*   TransSys.pp_print_trans_sys transSys; *)
+
+
+  let _ = () in
   debug horn
      "%a"
      TransSys.pp_print_trans_sys transSys

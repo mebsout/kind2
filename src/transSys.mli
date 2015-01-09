@@ -25,7 +25,7 @@
 type source = 
   | Lustre of LustreNode.t list  (** Lustre with given nodes *)
   | Native                       (** Native format *)
-
+  | Horn                         (** Horn clauses format *)
 
 (** A definition of an uninterpreted predicate *)
 type pred_def = (UfSymbol.t * (Var.t list * Term.t)) 

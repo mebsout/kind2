@@ -850,8 +850,8 @@ let main () =
 
         | `Horn -> 
           
-          (* Horn.of_file (Flags.input_file ()) *)
-          assert false);
+          Some (Horn.of_file (Flags.input_file ()))
+      );
 
     (* Output the transition system *)
     (debug parse
