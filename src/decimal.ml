@@ -193,7 +193,7 @@ let of_string s =
         | '.' -> scan_frac (succ pos) 0
 
         (* Continue parsing exponent part *)
-        | 'E' -> scan_exp (succ pos) 0
+        (* | 'E' -> scan_exp (succ pos) 0 *)
 
         (* Allow digits, append to buffer *)
         | '0'..'9' as c -> 
