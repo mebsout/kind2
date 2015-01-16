@@ -326,6 +326,7 @@ let temp_vars_to_state_vars scope term =
   in
   (* Format.eprintf "RES TEMP VARS : %a@." Term.pp_print_term t; *)
   t
+  
 
 let unlet_term term = Term.construct (Term.eval_t (fun t _ -> t) term)
 
@@ -435,9 +436,8 @@ let add_horn (init, trans, props) scope
 
   let state_vars = 
     List.fold_left
-      (fun a e -> SVS.add e a)
-      SVS.empty
-      (List.map Var.state_var_of_state_var_instance vars_0)
+      (fun a e -> SVS.add (Var.state_var_of_state_var_instance e) a)
+      SVS.empty vars_0
   in
 
   match var_pos, var_neg with 
@@ -492,9 +492,9 @@ let add_horn (init, trans, props) scope
                 (Term.mk_and (List.map Term.negate literals))))
       in
 
-      (* Format.eprintf "INIT : %a@." Term.pp_print_term term; *)
+      Format.eprintf "INIT : %a@." Term.pp_print_term term;
       let term' = if true then solve_eqs state_vars term else term in
-      (* Format.eprintf "INIT afeter solver : %a@." Term.pp_print_term term'; *)
+      Format.eprintf "INIT afeter solver : %a@." Term.pp_print_term term';
 
       (* Symbol for initial state constraint for node *)
       let init_uf_symbol = 
@@ -683,13 +683,13 @@ let rec parse acc sym_p_opt lexbuf =
 
        | Some (sym_p, vars_0, vars_1) -> 
 
-         (* Format.eprintf "SEXPR: %a@." HStringSExpr.pp_print_sexpr e; *)
+         Format.eprintf "SEXPR: %a@." HStringSExpr.pp_print_sexpr e;
 
          let expr = Conv.expr_of_string_sexpr e in
 
-         (* Format.eprintf "EXPR: %a@." Term.pp_print_term expr; *)
+         Format.eprintf "EXPR: %a@." Term.pp_print_term expr;
          let clause = clause_of_expr expr in
-         (* List.iter (Format.eprintf " - CJ CLAUSE: %a@." Term.pp_print_term) clause; *)
+         List.iter (Format.eprintf " - CJ CLAUSE: %a@." Term.pp_print_term) clause;
          
          let var_pos, var_neg, clause' = classify_clause sym_p clause in
 
@@ -733,8 +733,8 @@ let of_file filename =
 
   let transSys = of_channel in_ch in
 
-  (* Format.eprintf "------- TRANSITION SYSTEM ---------\n\n %a@." *)
-  (*   TransSys.pp_print_trans_sys transSys; *)
+  Format.eprintf "------- TRANSITION SYSTEM ---------\n\n %a@."
+    TransSys.pp_print_trans_sys transSys;
 
 
   let _ = () in
