@@ -17,9 +17,11 @@
 *)
 
 open Lib
+open Format
 
 module SVS = StateVar.StateVarSet
-
+module VM = Var.VarMap
+  
 module Conv = SMTExpr.Converter (Z3Driver)
 
 let s_set_info = HString.mk_hstring "set-info"
@@ -308,24 +310,27 @@ let temp_vars_to_state_vars scope term =
   let vars = temp_vars_of_term term in
   (* List.iter (Format.eprintf "TEMP VARS = %a@." Var.pp_print_var) vars; *)
   
-  let _, state_vars = 
+  let _, sv, svt = 
     List.fold_left
-      (fun (i, a) v -> 
-         (succ i,
-          Term.mk_var
-            (Var.mk_state_var_instance
-               (mk_fresh_state_var scope (Var.type_of_var v))
-               Numeral.zero) :: a))
-      (1, [])
+      (fun (i, sv, svt) v ->
+         let v = Var.mk_state_var_instance
+             (mk_fresh_state_var scope (Var.type_of_var v))
+             Numeral.zero in
+         let vt = Term.mk_var v in
+         (succ i, v :: sv, vt :: svt))
+      (1, [], [])
       vars
   in
+
+  let state_vars, state_var_terms = List.rev sv, List.rev svt in
+  (* List.iter (Format.eprintf "new TEMP VARS = %a@." Var.pp_print_var) state_vars; *)
   
   let t =Term.mk_let 
-    (List.combine vars (List.rev state_vars))
+    (List.combine vars state_var_terms)
     term
   in
   (* Format.eprintf "RES TEMP VARS : %a@." Term.pp_print_term t; *)
-  t
+  t, state_vars
   
 
 let unlet_term term = Term.construct (Term.eval_t (fun t _ -> t) term)
@@ -357,6 +362,208 @@ let rec let_for_args accum = function
 
   (* Lists must be of equal length *)
   | _ -> raise (Invalid_argument "let_for_args")
+
+
+
+let t_int_zero = Term.mk_num_of_int 0
+let t_int_one = Term.mk_num_of_int 1
+let t_int_minus_one = Term.mk_app Symbol.s_minus [t_int_one]
+    
+let t_real_zero = Term.mk_dec Decimal.zero
+let t_real_one = Term.mk_dec Decimal.one
+let t_real_minus_one = Term.mk_app Symbol.s_minus [t_real_one]
+
+
+let extract_monomial t = match Term.destruct t with
+  | Term.T.Const _ | Term.T.Var _ ->
+    let one =
+      match Type.node_of_type (Term.type_of_term t) with
+      | Type.Int | Type.IntRange _ -> t_int_one
+      | Type.Real -> t_real_one
+      | _ -> assert false
+    in
+    one, t
+  | Term.T.App (s, [k; m]) when s == Symbol.s_times -> k, m
+  | _ -> assert false 
+
+
+let extract_polynomial_eq l r =
+  assert (Term.equal r t_int_zero || Term.equal r t_real_zero);
+  match Term.destruct l with
+  | Term.T.App (s, sl) when s == Symbol.s_plus ->
+    List.map extract_monomial sl
+  | _ -> assert false
+
+let term_from_poly poly = match poly with
+  | [k, _] when Term.equal k t_int_zero -> t_int_zero
+  | [k, _] when Term.equal k t_real_zero -> t_real_zero
+  | [k, m] when Term.equal k t_int_one || Term.equal k t_real_one -> m
+  | [k, m] -> Term.mk_app Symbol.s_times [k; m]
+  | _ -> Term.mk_app Symbol.s_plus
+          (List.map (fun (k,m) -> Term.mk_app Symbol.s_times [k; m]) poly)
+
+let find_var_value v poly =
+  match List.partition (fun (_, m) -> Term.equal m (Term.mk_var v)) poly with
+  | [], _ -> None
+  | [k, _], r ->
+    if Term.equal k t_int_zero || Term.equal k t_real_zero then None
+    else
+      let rt = term_from_poly r in
+      if Term.equal k t_int_minus_one || Term.equal k t_real_minus_one then
+        Some (v, rt)
+      else if Term.equal k t_int_one then
+        Some (v, Simplify.simplify_term []
+                (Term.mk_times [t_int_minus_one; rt]))
+      else if Term.equal k t_real_one then
+        Some (v, Simplify.simplify_term []
+                (Term.mk_times [t_real_minus_one; rt]))
+      else Some (v, Simplify.simplify_term []
+                   (Term.mk_div [k; rt]))
+  | _ -> assert false
+
+
+let solve_eq v teq =
+  match Term.destruct (Simplify.simplify_term [] teq) with
+  | Term.T.App (s, [l; r]) when s == Symbol.s_eq ->
+    let poly = extract_polynomial_eq l r in
+    find_var_value v poly
+  | _ -> None
+
+
+let already_in_subst v =
+  List.exists (List.exists (fun (v', _) -> Var.equal_vars v v'))
+
+
+let solve_existential existential_vars term acc =  match term with
+  | Term.T.App (s, [l; r]) when s == Symbol.s_eq ->
+    let subst =
+      List.fold_left (fun subst v ->
+          if already_in_subst v (subst :: acc) then subst
+          else
+            match solve_eq v (Term.construct term) with
+            | None -> subst
+            | Some sigma -> sigma :: subst
+        ) [] existential_vars in
+    List.concat (subst :: acc)
+
+  | Term.T.App (s, l) when s == Symbol.s_and -> List.concat acc
+
+  | Term.T.App (s, l) -> List.concat acc
+
+  | Term.T.Const _ | Term.T.Var _ -> []
+
+  | Term.T.Attr (t, _) -> List.concat acc
+
+
+let solve_existential_order eval_order =
+  let r_subst = 
+    List.fold_left (fun subst (v,t) ->
+        match solve_eq v t with
+        | None -> subst
+        | Some sigma -> sigma :: subst
+      ) [] eval_order
+  in
+  List.rev r_subst
+
+
+let add_dep existential_vars term acc = match term with
+  | Term.T.App (s, [l; r]) when s == Symbol.s_eq ->
+    let d = List.filter (fun v ->
+        Var.VarSet.mem v (Term.vars_of_term (Term.construct term)))
+        existential_vars in
+    if d = [] then List.concat acc
+    else List.concat ([d, Term.construct term] :: acc)
+  | _ -> List.concat acc
+
+
+(* let pp_order fmt l = *)
+(*   List.iter (fun (v,t) -> *)
+(*       fprintf fmt "<- %a [%a] " Var.pp_print_var v Term.pp_print_term t) l; *)
+(*   fprintf fmt "@." *)
+
+
+(* let pp_rest fmt l = *)
+(*   List.iter (fun (d,t) -> *)
+(*       fprintf fmt "["; *)
+(*       List.iter (fun v -> fprintf fmt "%a," Var.pp_print_var v) d; *)
+(*       fprintf fmt "] [[[%a]]]" Term.pp_print_term t; *)
+(*     ) l; *)
+(*   fprintf fmt "@." *)
+
+let dependencies existential_vars term = 
+  let d = Term.eval_t (add_dep existential_vars) term in
+  let alone, inter = List.fold_left (fun (alone, inter) -> function
+      | [v], t ->
+        if List.exists (fun (v', _) -> Var.equal_vars v v') alone then
+          alone, inter
+        else (v,t) :: alone, inter
+      | dt -> alone, dt :: inter) ([], []) d in
+  (* eprintf "ALONE : %a" pp_order alone; *)
+  let rec order r_eval rest postpone =
+    (* eprintf "ORDER : %a" pp_order r_eval; *)
+    (* eprintf "REST : %a" pp_rest rest; *)
+    (* eprintf "POSTPONE : %a" pp_rest postpone; *)
+    match rest, postpone with
+    | (d,t) :: r, _ ->
+      let d' = List.filter (fun v ->
+          not (List.exists (fun (v', _) -> Var.equal_vars v v') r_eval)) d in
+      begin
+        match d' with
+        | [] -> order r_eval r postpone
+        | [v] -> order ((v,t) :: r_eval) r postpone
+        | _ -> order r_eval r ((d',t) :: postpone)
+      end
+    | [], _::_ -> order r_eval postpone []
+    | [], [] -> List.rev r_eval
+  in
+  order alone inter []
+
+
+let remove_trivial_eq term =
+  Term.map
+    (fun _ t -> match Term.destruct t with
+       | Term.T.App (s, [l; r]) when s == Symbol.s_eq && Term.equal l r ->
+         Term.t_true
+       | Term.T.App (s, [l; r])
+         when s == Symbol.s_eq &&
+              Term.equal (Simplify.simplify_term [] t) Term.t_true ->
+         Term.t_true
+       | Term.T.App (s, conj) when s == Symbol.s_and ->
+         let changed = ref false in
+         let conj' = List.filter (fun t' ->
+             if Term.equal t' Term.t_true then (changed := true; false)
+             else true
+           ) conj in
+         if !changed then Term.mk_and conj'
+         else t
+       | _ -> t
+    ) term
+  
+
+let solve_eqs existential_vars term =
+  (* unlet_term *)
+    let t = (match Term.eval_t (solve_existential existential_vars) term with
+      | [] -> term
+      | e ->
+        (* List.iter (fun (v,t) -> *)
+        (*     Format.eprintf "BINDINGS : %a -> %a\n@." Var.pp_print_var v Term.pp_print_term t) e; *)
+        List.fold_right (fun b t -> Term.mk_let [b] t) e term)
+    in
+    (* Format.eprintf "BEFORE UNLET : %a\n@." Term.pp_print_term t; *)
+    unlet_term t
+
+let solve_eqs existential_vars term =
+  let t =
+    match solve_existential_order (dependencies existential_vars term) with
+    | [] -> term
+    | e ->
+      (* List.iter (fun (v,t) -> *)
+      (*     Format.eprintf "BINDINGS : %a -> %a\n@." Var.pp_print_var v Term.pp_print_term t) e; *)
+      List.fold_right (fun b t -> Term.mk_let [b] t) e term
+  in
+  (* Format.eprintf "BEFORE UNLET : %a\n@." Term.pp_print_term t; *)
+  let t = unlet_term t in
+  remove_trivial_eq t
 
 
 let eq_to_let state_vars term accum = match term with
@@ -396,8 +603,11 @@ let eq_to_let state_vars term accum = match term with
            free variable to the state variable *)
         (Term.construct term, [(v1, Term.mk_var v2)])
         
-      (* Other equation, add let binding for collected equations *)
+
       | _ ->
+
+        (* Other equation, add let binding for collected equations *)
+        
         (* Format.eprintf "lfa accum = %d@." (List.length accum); *)
         (* List.iter (fun (t, e) -> Format.eprintf "%a@." Term.pp_print_term (Term.mk_let e t)) accum; *)
         (Term.mk_eq (let_for_args [] accum), [])
@@ -423,17 +633,32 @@ let eq_to_let state_vars term accum = match term with
   | Term.T.Attr (t, _) -> (t, snd (List.hd accum))
 
 
-let solve_eqs state_vars term =
+let solve_eqs_old state_vars term =
 
-  unlet_term
+  let t =   (* unlet_term *)
     (match Term.eval_t (eq_to_let state_vars) term with
-      | t, [] -> t
-      | t, e -> Term.mk_let e t)
-                
+     | t, [] -> t
+     | t, e -> Term.mk_let e t)
+  in
+  (* Format.eprintf "BEFORE UNLET : %a\n@." Term.pp_print_term t; *)
+  unlet_term t
+
+
+
+(* let rec look_for_eq v = function *)
+(*   | Term.T.App (s, l) when s == Symbol.s_and -> *)
+    
+
+
+(* let elim_existential_var v state_vars term = *)
+
+(*   assert false *)
+  
+
 
 let add_horn (init, trans, props) scope
     literals vars_0 vars_1 var_pos var_neg = 
-
+  
   let state_vars = 
     List.fold_left
       (fun a e -> SVS.add (Var.state_var_of_state_var_instance e) a)
@@ -458,18 +683,19 @@ let add_horn (init, trans, props) scope
     *)
     | [], _ -> 
 
-      let term = 
-        unlet_term
-          (temp_vars_to_state_vars
-             scope
-             (Term.mk_let 
-                (List.combine var_neg (List.map Term.mk_var vars_0))
-                (Term.negate (Term.mk_and (List.map Term.negate literals)))))
-                (* (Term.mk_or literals))) *)
-      in
+      let term, existential_vars =
+        temp_vars_to_state_vars
+          scope
+          (Term.mk_let 
+             (List.combine var_neg (List.map Term.mk_var vars_0))
+             (Term.negate (Term.mk_and (List.map Term.negate literals)))) in
+      (* (Term.mk_or literals))) *)
+      
+      let term = unlet_term term in
 
       (* Format.eprintf "PROP : %a@." Term.pp_print_term term; *)
-      let term' = if true then solve_eqs state_vars term else term in
+      let term' = if true then solve_eqs existential_vars term else term in
+      (* let term' = if true then solve_eqs_old state_vars term else term in *)
       (* Format.eprintf "PROP afeter solver : %a@." Term.pp_print_term term'; *)
       
       init, trans,
@@ -483,18 +709,22 @@ let add_horn (init, trans, props) scope
     *)
     | _, [] -> 
 
-      let term = 
-        unlet_term
-          (temp_vars_to_state_vars
-             scope
-             (Term.mk_let 
-                (List.combine var_pos (List.map Term.mk_var vars_0))
-                (Term.mk_and (List.map Term.negate literals))))
+      let term, existential_vars =
+        temp_vars_to_state_vars
+          scope
+          (Term.mk_let 
+             (List.combine var_pos (List.map Term.mk_var vars_0))
+             (Term.mk_and (List.map Term.negate_simplify literals)))
       in
+      
+      let term = unlet_term term in
 
-      Format.eprintf "INIT : %a@." Term.pp_print_term term;
-      let term' = if true then solve_eqs state_vars term else term in
-      Format.eprintf "INIT afeter solver : %a@." Term.pp_print_term term';
+      (* Format.eprintf "INIT : %a@." Term.pp_print_term term; *)
+      (* Format.eprintf "INIT SIMPLIFIED  : %a@." Term.pp_print_term (Simplify.simplify_term [] term); *)
+      let term' = if true then solve_eqs existential_vars term else term in
+      (* let term' = if true then solve_eqs_old state_vars term else term in *)
+      (* Format.eprintf "INIT afeter solver : %a@." Term.pp_print_term term'; *)
+      (* Format.eprintf "INIT SIMPLIFIED  : %a@." Term.pp_print_term (Simplify.simplify_term [] term'); *)
 
       (* Symbol for initial state constraint for node *)
       let init_uf_symbol = 
@@ -526,18 +756,20 @@ let add_horn (init, trans, props) scope
     *)
     | _, _ -> 
 
-      let term = 
-        unlet_term
-          (temp_vars_to_state_vars
-             scope
+      let term, existential_vars =
+        temp_vars_to_state_vars
+          scope
+          (Term.mk_let 
+             (List.combine var_neg (List.map Term.mk_var vars_0))
              (Term.mk_let 
-                (List.combine var_neg (List.map Term.mk_var vars_0))
-                (Term.mk_let 
-                   (List.combine var_pos (List.map Term.mk_var vars_1))
-                   (Term.mk_and (List.map Term.negate literals)))))
+                (List.combine var_pos (List.map Term.mk_var vars_1))
+                (Term.mk_and (List.map Term.negate_simplify literals))))
       in
 
-      let term' = if true then solve_eqs state_vars term else term in
+      let term = unlet_term term in
+
+      let term' = if true then solve_eqs existential_vars term else term in
+      (* let term' = if true then solve_eqs_old state_vars term else term in *)
 
 
       (* Symbol for transition relation for node *)
@@ -683,13 +915,13 @@ let rec parse acc sym_p_opt lexbuf =
 
        | Some (sym_p, vars_0, vars_1) -> 
 
-         Format.eprintf "SEXPR: %a@." HStringSExpr.pp_print_sexpr e;
+         (* Format.eprintf "SEXPR: %a@." HStringSExpr.pp_print_sexpr e; *)
 
          let expr = Conv.expr_of_string_sexpr e in
 
-         Format.eprintf "EXPR: %a@." Term.pp_print_term expr;
+         (* Format.eprintf "EXPR: %a@." Term.pp_print_term expr; *)
          let clause = clause_of_expr expr in
-         List.iter (Format.eprintf " - CJ CLAUSE: %a@." Term.pp_print_term) clause;
+         (* List.iter (Format.eprintf " - CJ CLAUSE: %a@." Term.pp_print_term) clause; *)
          
          let var_pos, var_neg, clause' = classify_clause sym_p clause in
 
@@ -733,8 +965,8 @@ let of_file filename =
 
   let transSys = of_channel in_ch in
 
-  Format.eprintf "------- TRANSITION SYSTEM ---------\n\n %a@."
-    TransSys.pp_print_trans_sys transSys;
+  (* Format.eprintf "------- TRANSITION SYSTEM ---------\n\n %a@." *)
+  (*   TransSys.pp_print_trans_sys transSys; *)
 
 
   let _ = () in

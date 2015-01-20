@@ -229,6 +229,12 @@ val s_mod : t
 (** Constant minus operator symbol *)
 val s_minus : t
 
+(** Constant plus operator symbol *)
+val s_plus : t
+
+(** Constant times operator symbol *)
+val s_times : t
+
 (** Constant division operator symbol *)
 val s_div : t
 

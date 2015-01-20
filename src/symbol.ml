@@ -505,6 +505,12 @@ let s_mod = mk_symbol `MOD
 (* Constant minus operator *)
 let s_minus = mk_symbol `MINUS
 
+(* Constant plus operator *)
+let s_plus = mk_symbol `PLUS
+
+(* Constant times operator *)
+let s_times = mk_symbol `TIMES
+
 (* Constant division operator *)
 let s_div = mk_symbol `DIV
 
