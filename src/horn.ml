@@ -20,6 +20,7 @@ open Lib
 open Format
 
 module SVS = StateVar.StateVarSet
+module SVM = StateVar.StateVarMap
 module VM = Var.VarMap
   
 module Conv = SMTExpr.Converter (Z3Driver)
@@ -744,10 +745,10 @@ let add_horn (init, trans, props) scope
            [ TransSys.init_flag_var TransSys.init_base ] @
            vars_0,
            (* Add constraint for init flag to be true *)
-           (Term.mk_and (
-               (TransSys.init_flag_var TransSys.init_base |> Term.mk_var)
-               ::
-               [term']))))
+           Term.mk_and 
+             [TransSys.init_flag_var TransSys.init_base |> Term.mk_var;
+              term']
+         ))
       in
       
       pred_def_init :: init, trans, props
@@ -792,15 +793,32 @@ let add_horn (init, trans, props) scope
          ((* Init flag. *)
            [ TransSys.init_flag_var TransSys.trans_base ] @
            vars_0 @ vars_1,
+
            (* Add constraint for init flag to be false *)
-           (Term.mk_and (
-               (TransSys.init_flag_var TransSys.trans_base
-                |> Term.mk_var |> Term.mk_not)
-               :: [term']))))
+           Term.mk_and
+             [TransSys.init_flag_var TransSys.trans_base
+              |> Term.mk_var |> Term.mk_not;
+              term']
+         ))
       in
 
       init, pred_def_trans :: trans, props
 
+
+(* type current_subrange = *)
+(*     Sub_Empty | Sub_Omega | Sub_Range of Numeral.t * Numeral.t *)
+
+
+(* let find_trivial_subranges state_vars init trans = *)
+(*   let all_empty = *)
+(*     List.fold_left (fun acc sv -> *)
+(*         if Type.equal_types Type.Int (StateVar.type_of_state_var sv) then *)
+(*           SVM.add sv Sub_Empty acc *)
+(*         else acc *)
+(*       ) SVM.empty state_vars in *)
+
+(*   let adasdiojfiow = *)
+(*     Term.eval_t *)
 
 let rec parse acc sym_p_opt lexbuf = 
 
@@ -973,15 +991,13 @@ let of_file filename =
 
   let transSys = of_channel in_ch in
 
-  Format.eprintf "------- TRANSITION SYSTEM ---------\n\n %a@."
-    TransSys.pp_print_trans_sys transSys;
-
-
-  let _ = () in
   debug horn
      "%a"
      TransSys.pp_print_trans_sys transSys
   in
+
+  (* Format.eprintf "------- TRANSITION SYSTEM ---------\n\n %a@." *)
+  (*   TransSys.pp_print_trans_sys transSys; *)
 
   transSys
 
