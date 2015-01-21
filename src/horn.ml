@@ -393,6 +393,7 @@ let extract_polynomial_eq l r =
   match Term.destruct l with
   | Term.T.App (s, sl) when s == Symbol.s_plus ->
     List.map extract_monomial sl
+  | Term.T.Var _ | Term.T.Const _ -> [extract_monomial l]
   | _ -> assert false
 
 let term_from_poly poly = match poly with
@@ -406,6 +407,14 @@ let term_from_poly poly = match poly with
 let find_var_value v poly =
   match List.partition (fun (_, m) -> Term.equal m (Term.mk_var v)) poly with
   | [], _ -> None
+  | [k, _], [] -> 
+    if Term.equal k t_int_zero || Term.equal k t_real_zero then None
+    else begin
+      match Type.node_of_type (Var.type_of_var v) with
+      | Type.Int | Type.IntRange _ -> Some (v, t_int_zero)
+      | Type.Real -> Some (v, t_real_zero)
+      | _ -> assert false
+    end
   | [k, _], r ->
     if Term.equal k t_int_zero || Term.equal k t_real_zero then None
     else
