@@ -741,9 +741,13 @@ let add_horn (init, trans, props) scope
         (* Name of symbol *)
         (init_uf_symbol,
          ((* Init flag? *)
-           (* [ TransSys.init_flag_var TransSys.init_base ] @ *)
+           [ TransSys.init_flag_var TransSys.init_base ] @
            vars_0,
-           term'))
+           (* Add constraint for init flag to be true *)
+           (Term.mk_and (
+               (TransSys.init_flag_var TransSys.init_base |> Term.mk_var)
+               ::
+               [term']))))
       in
       
       pred_def_init :: init, trans, props
@@ -786,9 +790,13 @@ let add_horn (init, trans, props) scope
       let pred_def_trans = 
         (trans_uf_symbol,
          ((* Init flag. *)
-          (* [ TransSys.init_flag_var TransSys.trans_base ] @ *)
-          vars_0 @ vars_1,
-          term'))
+           [ TransSys.init_flag_var TransSys.trans_base ] @
+           vars_0 @ vars_1,
+           (* Add constraint for init flag to be false *)
+           (Term.mk_and (
+               (TransSys.init_flag_var TransSys.trans_base
+                |> Term.mk_var |> Term.mk_not)
+               :: [term']))))
       in
 
       init, pred_def_trans :: trans, props
@@ -965,8 +973,8 @@ let of_file filename =
 
   let transSys = of_channel in_ch in
 
-  (* Format.eprintf "------- TRANSITION SYSTEM ---------\n\n %a@." *)
-  (*   TransSys.pp_print_trans_sys transSys; *)
+  Format.eprintf "------- TRANSITION SYSTEM ---------\n\n %a@."
+    TransSys.pp_print_trans_sys transSys;
 
 
   let _ = () in
