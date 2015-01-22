@@ -16,8 +16,13 @@
 
 *)
 
+(** Parse from the file *)
 val of_file : string -> TransSys.t 
-      
+
+(** Pretty-print a counter example *)
+val pp_print_path_pt : Format.formatter -> (StateVar.t * Term.t list) list -> unit
+
+
 (* 
    Local Variables:
    compile-command: "make -C .. -k"

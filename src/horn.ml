@@ -16,8 +16,8 @@
 
 *)
 
-open Lib
 open Format
+open Lib
 
 module SVS = StateVar.StateVarSet
 module SVM = StateVar.StateVarMap
@@ -1049,7 +1049,80 @@ let of_file filename =
 
   transSys
 
-      
+
+
+(* ************************************************************ *)
+(* Counterexample output in plain text                          *)
+(* ************************************************************ *)
+
+
+(* Return width of widest identifier and widest value *)
+let rec widths_of_model max_ident_width max_val_width = function 
+  
+  | [] -> (max_ident_width, max_val_width)
+
+  | (state_var, values) :: tl -> 
+
+    (* Maximal print width of state variable *)
+    let max_ident_width' = 
+      max
+        max_ident_width
+        (String.length 
+           (string_of_t StateVar.pp_print_state_var state_var))
+    in
+    
+    (* Maximal print width of values *)
+    let max_val_width' =
+      List.fold_left 
+        (fun m v -> 
+           max
+             m
+             (String.length
+                (string_of_t Term.pp_print_term v)))
+        max_val_width
+        values
+    in
+
+    (* Return new maximum widths *)
+    widths_of_model max_ident_width' max_val_width' tl
+
+(* Pretty-print a value in a model *)
+let pp_print_value_pt val_width ppf value = 
+
+  Format.fprintf
+    ppf
+    "%-*s"
+    val_width
+    (string_of_t Term.pp_print_term value)
+
+(* Pretty-print a state variable and its values *)
+let pp_print_state_var_pt state_var_width val_width ppf (state_var, values) =
+
+  Format.fprintf 
+    ppf
+    "@[<h>%-*s: %a@]"
+    state_var_width
+    (string_of_t StateVar.pp_print_state_var state_var)
+    (pp_print_list
+       (pp_print_value_pt val_width)
+       " ")
+    values
+
+(* Pretty-print a model *)
+let pp_print_path_pt ppf model = 
+
+  let state_var_width, val_width = widths_of_model 0 0 model in
+
+  Format.fprintf
+    ppf
+    "@[<v>%a@]"
+    (pp_print_list
+       (pp_print_state_var_pt state_var_width val_width)
+       "@,")
+    model
+       
+
+
 (* 
    Local Variables:
    compile-command: "make -C .. -k"
