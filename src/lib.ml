@@ -468,6 +468,32 @@ let pp_print_hline ppf () =
     hline
 
 
+(* Captures the output and exit status of a unix command : aux func *)
+let syscall cmd =
+  let ic, oc = Unix.open_process cmd in
+  let buf = Buffer.create 16 in
+  (try
+     while true do
+       Buffer.add_channel buf ic 1
+     done
+   with End_of_file -> ());
+  let _ = Unix.close_process (ic, oc) in
+  (Buffer.contents buf)
+
+
+(* Set width of pretty printing boxes to number of columns of virtual
+   terminal *)
+let vt_width =
+  try
+    let scol = syscall "tput cols" in
+    let w = int_of_string (String.trim scol) in
+    Format.pp_set_margin Format.std_formatter w;
+    Format.pp_set_margin Format.err_formatter w;
+    w
+  with Not_found | Failure _ -> 80
+
+
+
 (* ********************************************************************** *)
 (* Option types                                                           *)
 (* ********************************************************************** *)
