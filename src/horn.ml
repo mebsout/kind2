@@ -22,6 +22,7 @@ open Format
 module SVS = StateVar.StateVarSet
 module SVM = StateVar.StateVarMap
 module VM = Var.VarMap
+module VS = Var.VarSet
   
 module Conv = SMTExpr.Converter (Z3Driver)
 
@@ -474,7 +475,7 @@ let solve_existential_order eval_order =
       ) [] eval_order
   in
   List.rev r_subst
-
+    
 
 let add_dep existential_vars term acc = match term with
   | Term.T.App (s, [l; r]) when s == Symbol.s_eq ->
@@ -500,7 +501,8 @@ let add_dep existential_vars term acc = match term with
 (*     ) l; *)
 (*   fprintf fmt "@." *)
 
-let dependencies existential_vars term = 
+let dependencies existential_vars term =
+
   let d = Term.eval_t (add_dep existential_vars) term in
   let alone, inter = List.fold_left (fun (alone, inter) -> function
       | [v], t ->
@@ -526,6 +528,7 @@ let dependencies existential_vars term =
     | [], _::_ -> order r_eval postpone []
     | [], [] -> List.rev r_eval
   in
+
   order alone inter []
 
 
@@ -552,27 +555,46 @@ let remove_trivial_eq term =
 
 let solve_eqs existential_vars term =
   (* unlet_term *)
-    let t = (match Term.eval_t (solve_existential existential_vars) term with
+  let t =
+    match Term.eval_t (solve_existential existential_vars) term with
       | [] -> term
       | e ->
         (* List.iter (fun (v,t) -> *)
         (*     Format.eprintf "BINDINGS : %a -> %a\n@." Var.pp_print_var v Term.pp_print_term t) e; *)
-        List.fold_right (fun b t -> Term.mk_let [b] t) e term)
+        List.fold_right (fun b t -> Term.mk_let [b] t) e term
     in
     (* Format.eprintf "BEFORE UNLET : %a\n@." Term.pp_print_term t; *)
     unlet_term t
 
+
+let cluster_lets l =
+  let clusters, last, _ =
+    List.fold_left (fun (acc, cluster, currv) (v, t) ->
+        let tvs = Term.vars_of_term t in
+        if VS.is_empty (VS.inter tvs currv) then
+          acc, (v, t) :: cluster, VS.add v currv
+        else
+          List.rev cluster :: acc, [v, t], VS.empty
+      ) ([], [], VS.empty) l
+  in
+  let clusters = if last = [] then clusters else List.rev last :: clusters in
+  List.rev clusters
+
+      
 let solve_eqs existential_vars term =
   let t =
     match solve_existential_order (dependencies existential_vars term) with
     | [] -> term
     | e ->
-      (* List.iter (fun (v,t) -> *)
-      (*     Format.eprintf "BINDINGS : %a -> %a\n@." Var.pp_print_var v Term.pp_print_term t) e; *)
-      List.fold_right (fun b t -> Term.mk_let [b] t) e term
+      let cls = cluster_lets e in
+      List.fold_right (fun cl t -> Term.mk_let cl t) cls term
+      
   in
   (* Format.eprintf "BEFORE UNLET : %a\n@." Term.pp_print_term t; *)
   let t = unlet_term t in
+  
+  (* eprintf "  remove trivial@."; *)
+
   remove_trivial_eq t
 
 
@@ -693,6 +715,8 @@ let add_horn (init, trans, props) scope
     *)
     | [], _ -> 
 
+      (* eprintf "add_horn PROP ...@."; *)
+
       let term, existential_vars =
         temp_vars_to_state_vars
           scope
@@ -708,6 +732,8 @@ let add_horn (init, trans, props) scope
       (* let term' = if true then solve_eqs_old state_vars term else term in *)
       (* Format.eprintf "PROP afeter solver : %a@." Term.pp_print_term term'; *)
       
+      (* eprintf " done@."; *)
+      
       init, trans,
       ("P", TermLib.PropAnnot Lib.dummy_pos, term') :: props
 
@@ -719,6 +745,9 @@ let add_horn (init, trans, props) scope
     *)
     | _, [] -> 
 
+      (* eprintf "add_horn INIT ...@."; *)
+
+      
       let term, existential_vars =
         temp_vars_to_state_vars
           scope
@@ -760,6 +789,8 @@ let add_horn (init, trans, props) scope
          ))
       in
       
+      (* eprintf " done@."; *)
+      
       pred_def_init :: init, trans, props
 
 
@@ -770,6 +801,8 @@ let add_horn (init, trans, props) scope
     *)
     | _, _ -> 
 
+      (* eprintf "add_horn TRANS ...@."; *)
+      
       let term, existential_vars =
         temp_vars_to_state_vars
           scope
@@ -779,8 +812,12 @@ let add_horn (init, trans, props) scope
                 (List.combine var_pos (List.map Term.mk_var vars_1))
                 (Term.mk_and (List.map Term.negate_simplify literals))))
       in
+      
+      (* eprintf "  unlet@."; *)
 
       let term = unlet_term term in
+
+      (* eprintf "  solve@."; *)
 
       let term' = if true then solve_eqs existential_vars term else term in
       (* let term' = if true then solve_eqs_old state_vars term else term in *)
@@ -811,6 +848,8 @@ let add_horn (init, trans, props) scope
          ))
       in
 
+      (* eprintf " done@."; *)
+      
       init, pred_def_trans :: trans, props
 
 
