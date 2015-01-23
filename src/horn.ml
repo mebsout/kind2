@@ -228,7 +228,7 @@ let rec polarity_of_pred sym_p polarity expr = match Term.destruct expr with
    clause contains the monolithic predicate with positive or negative
    polarity, respectively *)
 let classify_clause sym_p literals =
-
+  
   List.fold_left 
     (fun (pos, neg, accum) expr -> 
 
@@ -445,26 +445,6 @@ let already_in_subst v =
   List.exists (List.exists (fun (v', _) -> Var.equal_vars v v'))
 
 
-let solve_existential existential_vars term acc =  match term with
-  | Term.T.App (s, [l; r]) when s == Symbol.s_eq ->
-    let subst =
-      List.fold_left (fun subst v ->
-          if already_in_subst v (subst :: acc) then subst
-          else
-            match solve_eq v (Term.construct term) with
-            | None -> subst
-            | Some sigma -> sigma :: subst
-        ) [] existential_vars in
-    List.concat (subst :: acc)
-
-  | Term.T.App (s, l) when s == Symbol.s_and -> List.concat acc
-
-  | Term.T.App (s, l) -> List.concat acc
-
-  | Term.T.Const _ | Term.T.Var _ -> []
-
-  | Term.T.Attr (t, _) -> List.concat acc
-
 
 let solve_existential_order eval_order =
   let r_subst = 
@@ -475,16 +455,79 @@ let solve_existential_order eval_order =
       ) [] eval_order
   in
   List.rev r_subst
-    
 
-let add_dep existential_vars term acc = match term with
-  | Term.T.App (s, [l; r]) when s == Symbol.s_eq ->
+
+let remove_trivial_eq term =
+  Term.map
+    (fun _ t -> match Term.destruct t with
+       | Term.T.App (s, [l; r]) when s == Symbol.s_eq && Term.equal l r ->
+         Term.t_true
+       | Term.T.App (s, [l; r])
+         when s == Symbol.s_eq &&
+              Term.equal (Simplify.simplify_term [] t) Term.t_true ->
+         Term.t_true
+       | Term.T.App (s, conj) when s == Symbol.s_and ->
+         let changed = ref false in
+         let conj' = List.filter (fun t' ->
+             if Term.equal t' Term.t_true then (changed := true; false)
+             else true
+           ) conj in
+         if !changed then Term.mk_and conj'
+         else t
+       | _ -> t
+    ) term
+
+
+
+let cluster_lets l =
+  let clusters, last, _ =
+    List.fold_left (fun (acc, cluster, currv) (v, t) ->
+        let tvs = Term.vars_of_term t in
+        if VS.is_empty (VS.inter tvs currv) then
+          acc, (v, t) :: cluster, VS.add v currv
+        else
+          List.rev cluster :: acc, [v, t], VS.empty
+      ) ([], [], VS.empty) l
+  in
+  let clusters = if last = [] then clusters else List.rev last :: clusters in
+  List.rev clusters
+
+
+let elim_in_subterm e term =
+  let t = match e with
+    | [] -> term
+    | _ ->
+      let cls = cluster_lets e in
+      List.fold_right (fun cl t -> Term.mk_let cl t) cls term
+  in
+  (* Format.eprintf "BEFORE UNLET : %a\n@." Term.pp_print_term t; *)
+  let t = unlet_term t in
+  (* eprintf "  remove trivial@."; *)
+  remove_trivial_eq t
+
+
+
+let add_dep existential_vars term acc =
+  match term with
+  | Term.T.App (s, _) when s == Symbol.s_eq ->
     let d = List.filter (fun v ->
         Var.VarSet.mem v (Term.vars_of_term (Term.construct term)))
         existential_vars in
     if d = [] then List.concat acc
     else List.concat ([d, Term.construct term] :: acc)
-  | _ -> List.concat acc
+  | Term.T.App (s, _) when s == Symbol.s_and -> List.concat acc
+  | _ -> []
+
+  (* | Term.T.App (s, _) when s == Symbol.s_or -> *)
+  (*   assert false *)
+  (* | Term.T.App (s, _) when s == Symbol.s_implies -> *)
+  (*   assert false *)
+    
+  (* | Term.T.Var _ | Term.T.Const _ | Term.T.Attr _ -> [] *)
+  (* | Term.T.App (s, _) when s == Symbol.s_not -> [] *)
+  (* | Term.T.App (s, _) -> *)
+  (*   Format.eprintf "Cannot solver over %a@." Symbol.pp_print_symbol s; *)
+  (*   assert false *)
 
 
 (* let pp_order fmt l = *)
@@ -532,70 +575,55 @@ let dependencies existential_vars term =
   order alone inter []
 
 
-let remove_trivial_eq term =
-  Term.map
-    (fun _ t -> match Term.destruct t with
-       | Term.T.App (s, [l; r]) when s == Symbol.s_eq && Term.equal l r ->
-         Term.t_true
-       | Term.T.App (s, [l; r])
-         when s == Symbol.s_eq &&
-              Term.equal (Simplify.simplify_term [] t) Term.t_true ->
-         Term.t_true
-       | Term.T.App (s, conj) when s == Symbol.s_and ->
-         let changed = ref false in
-         let conj' = List.filter (fun t' ->
-             if Term.equal t' Term.t_true then (changed := true; false)
-             else true
-           ) conj in
-         if !changed then Term.mk_and conj'
-         else t
-       | _ -> t
-    ) term
+let partial_nnf term =
+  let rec nnf positive term =
+    match Term.destruct term with
+    
+    | Term.T.App (s, [t]) when s == Symbol.s_not ->
+      nnf (not positive) t
+
+    | Term.T.App (s, l) when s == Symbol.s_and ->
+      let l' = List.map (nnf positive) l in
+      if positive then Term.mk_and l'
+      else Term.mk_or l'
+
+    | Term.T.App (s, l) when s == Symbol.s_or ->
+      let l' = List.map (nnf positive) l in
+      if positive then Term.mk_or l'
+      else Term.mk_and l'
+
+    | Term.T.App (s, i :: r) when s == Symbol.s_implies ->
+      let l' = nnf (not positive) i :: (List.map (nnf positive) r) in
+      if positive then Term.mk_or l'
+      else Term.mk_and l'
+
+    | _ -> if positive then term else Term.negate_simplify term
+          
+  in
+  nnf true term
+
+    
   
+let solve_eqs_subterm existential_vars term =
+  elim_in_subterm
+    (solve_existential_order (dependencies existential_vars term)) term
+
 
 let solve_eqs existential_vars term =
-  (* unlet_term *)
+  let nnf_term = partial_nnf term in
   let t =
-    match Term.eval_t (solve_existential existential_vars) term with
-      | [] -> term
-      | e ->
-        (* List.iter (fun (v,t) -> *)
-        (*     Format.eprintf "BINDINGS : %a -> %a\n@." Var.pp_print_var v Term.pp_print_term t) e; *)
-        List.fold_right (fun b t -> Term.mk_let [b] t) e term
-    in
-    (* Format.eprintf "BEFORE UNLET : %a\n@." Term.pp_print_term t; *)
-    unlet_term t
-
-
-let cluster_lets l =
-  let clusters, last, _ =
-    List.fold_left (fun (acc, cluster, currv) (v, t) ->
-        let tvs = Term.vars_of_term t in
-        if VS.is_empty (VS.inter tvs currv) then
-          acc, (v, t) :: cluster, VS.add v currv
-        else
-          List.rev cluster :: acc, [v, t], VS.empty
-      ) ([], [], VS.empty) l
+    Term.eval_t (fun t acc -> match t with
+        
+        | Term.T.App (s, l) when s == Symbol.s_and ->
+          Term.mk_and acc
+            
+        | Term.T.App (s, l) when s == Symbol.s_or ->
+          Term.mk_or (List.map (solve_eqs_subterm existential_vars) acc)
+            
+        | _ -> Term.construct t) nnf_term
   in
-  let clusters = if last = [] then clusters else List.rev last :: clusters in
-  List.rev clusters
-
-      
-let solve_eqs existential_vars term =
-  let t =
-    match solve_existential_order (dependencies existential_vars term) with
-    | [] -> term
-    | e ->
-      let cls = cluster_lets e in
-      List.fold_right (fun cl t -> Term.mk_let cl t) cls term
-      
-  in
-  (* Format.eprintf "BEFORE UNLET : %a\n@." Term.pp_print_term t; *)
-  let t = unlet_term t in
-  
-  (* eprintf "  remove trivial@."; *)
-
-  remove_trivial_eq t
+  solve_eqs_subterm existential_vars t
+ 
 
 
 let eq_to_let state_vars term accum = match term with
@@ -717,21 +745,22 @@ let add_horn (init, trans, props) scope
 
       (* eprintf "add_horn PROP ...@."; *)
 
-      let term, existential_vars =
+      let neg_term, existential_vars =
         temp_vars_to_state_vars
           scope
           (Term.mk_let 
              (List.combine var_neg (List.map Term.mk_var vars_0))
-             (Term.negate (Term.mk_and (List.map Term.negate literals)))) in
+             ((* Term.negate *) (Term.mk_and (List.map Term.negate literals)))) in
       (* (Term.mk_or literals))) *)
       
-      let term = unlet_term term in
+      let neg_term = unlet_term neg_term in
 
       (* Format.eprintf "PROP : %a@." Term.pp_print_term term; *)
-      let term' = if true then solve_eqs existential_vars term else term in
+      let neg_term' = if true then solve_eqs existential_vars neg_term else neg_term in
       (* let term' = if true then solve_eqs_old state_vars term else term in *)
       (* Format.eprintf "PROP afeter solver : %a@." Term.pp_print_term term'; *)
-      
+
+      let term' = Term.negate neg_term' in
       (* eprintf " done@."; *)
       
       init, trans,
@@ -995,7 +1024,8 @@ let rec parse acc sym_p_opt lexbuf =
 
          (* Format.eprintf "EXPR: %a@." Term.pp_print_term expr; *)
          let clause = clause_of_expr expr in
-         (* List.iter (Format.eprintf " - CJ CLAUSE: %a@." Term.pp_print_term) clause; *)
+         (* eprintf "CLAUSE :@."; *)
+         (* List.iter (Format.eprintf " -- %a@." Term.pp_print_term) (List.map unlet_term clause); *)
          
          let var_pos, var_neg, clause' = classify_clause sym_p clause in
 
