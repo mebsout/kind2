@@ -19,6 +19,8 @@
 open Format
 open Lib
 
+let do_simplify_eqs = true
+
 module SVS = StateVar.StateVarSet
 module SVM = StateVar.StateVarMap
 module VM = Var.VarMap
@@ -559,10 +561,12 @@ let dependencies existential_vars term =
       end
     | [], _::_, false -> order r_eval (List.rev postpone) [] true
     | [], _::_, true ->
-      let evs =
-        List.fold_left (fun acc (l, _) -> List.rev_append l acc) [] postpone in
-      failwith (asprintf "Could not solve all equations (%a)."
-                  (pp_print_list Var.pp_print_var ", ") evs)
+      (* Stop there *)
+      List.rev r_eval
+      (* let evs = *)
+      (*   List.fold_left (fun acc (l, _) -> List.rev_append l acc) [] postpone in *)
+      (* failwith (asprintf "Could not solve all equations (%a)." *)
+      (*             (pp_print_list Var.pp_print_var ", ") evs) *)
     | [], [], _ -> List.rev r_eval
   in
 
@@ -619,6 +623,32 @@ let solve_eqs existential_vars term =
   solve_eqs_subterm existential_vars t
  
 
+
+let fresh_skolem =
+  let n = ref 0 in
+  fun scope ty ->
+    incr n;
+    let s = sprintf "_SKO%d" !n in
+    StateVar.mk_state_var s scope ty
+
+let is_skolem_statevar v =
+  let s = StateVar.string_of_state_var v in
+  try String.sub s 0 4 = "_SKO"
+  with Invalid_argument _ -> false
+
+
+let skolemize_remaining existential_vars term =
+  let vs = Term.vars_of_term term in
+  let rem = List.filter (fun v -> VS.mem v vs) existential_vars in
+  let skos, b_skos = List.fold_left (fun (skos, bskos) v ->
+      let sko = Var.mk_state_var_instance
+          (fresh_skolem [] (Var.type_of_var v)) Numeral.zero in
+      let skot = Term.mk_var sko in
+      sko :: skos, (v, skot) :: bskos
+    ) ([], []) rem in
+  let t = unlet_term (Term.mk_let b_skos term) in
+  t, skos
+  
 
 let eq_to_let state_vars term accum = match term with
 
@@ -710,7 +740,7 @@ let solve_eqs_old state_vars term =
   
 
 
-let add_horn (init, trans, props) scope
+let add_horn (skolems, init, trans, props) scope
     literals vars_0 vars_1 var_pos var_neg = 
   
   let state_vars = 
@@ -750,14 +780,18 @@ let add_horn (init, trans, props) scope
       let neg_term = unlet_term neg_term in
 
       (* Format.eprintf "PROP : %a@." Term.pp_print_term term; *)
-      let neg_term' = if true then solve_eqs existential_vars neg_term else neg_term in
+      let neg_term' =
+        if do_simplify_eqs then solve_eqs existential_vars neg_term
+        else neg_term in
       (* let term' = if true then solve_eqs_old state_vars term else term in *)
       (* Format.eprintf "PROP afeter solver : %a@." Term.pp_print_term term'; *)
 
+      let neg_term', sko_vs = skolemize_remaining existential_vars neg_term' in
+      
       let term' = Term.negate neg_term' in
       (* eprintf " done@."; *)
       
-      init, trans,
+      sko_vs @ skolems, init, trans,
       ("P", TermLib.PropAnnot Lib.dummy_pos, term') :: props
 
 
@@ -783,10 +817,15 @@ let add_horn (init, trans, props) scope
 
       (* Format.eprintf "INIT : %a@." Term.pp_print_term term; *)
       (* Format.eprintf "INIT SIMPLIFIED  : %a@." Term.pp_print_term (Simplify.simplify_term [] term); *)
-      let term' = if true then solve_eqs existential_vars term else term in
+      let term' =
+        if do_simplify_eqs then solve_eqs existential_vars term
+        else term in
       (* let term' = if true then solve_eqs_old state_vars term else term in *)
       (* Format.eprintf "INIT afeter solver : %a@." Term.pp_print_term term'; *)
       (* Format.eprintf "INIT SIMPLIFIED  : %a@." Term.pp_print_term (Simplify.simplify_term [] term'); *)
+
+      let term', sko_vs = skolemize_remaining existential_vars term' in
+
 
       (* Symbol for initial state constraint for node *)
       let init_uf_symbol = 
@@ -794,7 +833,7 @@ let add_horn (init, trans, props) scope
           (* Name of symbol *)
           LustreIdent.init_uf_string
           (* Types of variables in the signature *)
-          (List.map Var.type_of_var var_pos)
+          (List.map Var.type_of_var (var_pos @ sko_vs))
           (* Symbol is a predicate *)
           Type.t_bool
       in
@@ -804,7 +843,7 @@ let add_horn (init, trans, props) scope
         (init_uf_symbol,
          ((* Init flag? *)
            [ TransSys.init_flag_var TransSys.init_base ] @
-           vars_0,
+           vars_0 @ sko_vs,
            (* Add constraint for init flag to be true *)
            Term.mk_and 
              [TransSys.init_flag_var TransSys.init_base |> Term.mk_var;
@@ -814,7 +853,7 @@ let add_horn (init, trans, props) scope
       
       (* eprintf " done@."; *)
       
-      pred_def_init :: init, trans, props
+      sko_vs @ skolems, pred_def_init :: init, trans, props
 
 
     (* Predicate occurs positive and negative: transition relation
@@ -842,8 +881,12 @@ let add_horn (init, trans, props) scope
 
       (* eprintf "  solve@."; *)
 
-      let term' = if true then solve_eqs existential_vars term else term in
+      let term' =
+        if do_simplify_eqs then solve_eqs existential_vars term
+        else term in
       (* let term' = if true then solve_eqs_old state_vars term else term in *)
+
+      let term', sko_vs = skolemize_remaining existential_vars term' in
 
 
       (* Symbol for transition relation for node *)
@@ -852,7 +895,7 @@ let add_horn (init, trans, props) scope
           (* Name of symbol *)
           LustreIdent.trans_uf_string
           (* Types of variables in the signature *)
-          (List.map Var.type_of_var (var_neg @ var_pos))
+          (List.map Var.type_of_var (var_neg @ var_pos @ sko_vs))
           (* Symbol is a predicate *)
           Type.t_bool
       in
@@ -861,7 +904,7 @@ let add_horn (init, trans, props) scope
         (trans_uf_symbol,
          ((* Init flag. *)
            [ TransSys.init_flag_var TransSys.trans_base ] @
-           vars_0 @ vars_1,
+           vars_0 @ vars_1 @ sko_vs,
 
            (* Add constraint for init flag to be false *)
            Term.mk_and
@@ -873,7 +916,7 @@ let add_horn (init, trans, props) scope
 
       (* eprintf " done@."; *)
       
-      init, pred_def_trans :: trans, props
+      sko_vs @ skolems, init, pred_def_trans :: trans, props
 
 
 (* type current_subrange = *)
@@ -899,7 +942,7 @@ let rec parse acc sym_p_opt lexbuf =
   | None ->
     (match acc with
      (* Construct transition system from gathered information *)
-     | [init], [trans], props ->
+     | sko_vars, [init], [trans], props ->
        
        let state_vars = match sym_p_opt with
          | None -> []
@@ -911,7 +954,9 @@ let rec parse acc sym_p_opt lexbuf =
            SVS.elements svs
        in
 
-       TransSys.mk_trans_sys [] (* scope *) state_vars
+       let sko_st = List.map Var.state_var_of_state_var_instance sko_vars in
+       
+       TransSys.mk_trans_sys [] (* scope *) (state_vars @ sko_st)
          init trans [] props TransSys.Horn
          
      | _ -> assert false)
@@ -1051,7 +1096,7 @@ let of_channel in_ch =
   (* Initialise buffer for lexing *)
   let lexbuf = Lexing.from_channel in_ch in
 
-  parse ([], [], []) None lexbuf
+  parse ([], [], [], []) None lexbuf
 
 
 (* Parse SMTLIB2 Horn format from file *)
@@ -1132,9 +1177,13 @@ let pp_print_state_var_pt state_var_width val_width ppf (state_var, values) =
        " ")
     values
 
+
+let filter_out_skolems model =
+  List.filter (fun (v, _) -> not (is_skolem_statevar v)) model
+
 (* Pretty-print a model *)
 let pp_print_path_pt ppf model = 
-
+  let model = filter_out_skolems model in
   let state_var_width, val_width = widths_of_model 0 0 model in
 
   Format.fprintf
