@@ -518,17 +518,6 @@ let add_dep existential_vars term acc =
   | Term.T.App (s, _) when s == Symbol.s_and -> List.concat acc
   | _ -> []
 
-  (* | Term.T.App (s, _) when s == Symbol.s_or -> *)
-  (*   assert false *)
-  (* | Term.T.App (s, _) when s == Symbol.s_implies -> *)
-  (*   assert false *)
-    
-  (* | Term.T.Var _ | Term.T.Const _ | Term.T.Attr _ -> [] *)
-  (* | Term.T.App (s, _) when s == Symbol.s_not -> [] *)
-  (* | Term.T.App (s, _) -> *)
-  (*   Format.eprintf "Cannot solver over %a@." Symbol.pp_print_symbol s; *)
-  (*   assert false *)
-
 
 (* let pp_order fmt l = *)
 (*   List.iter (fun (v,t) -> *)
@@ -545,7 +534,7 @@ let add_dep existential_vars term acc =
 (*   fprintf fmt "@." *)
 
 let dependencies existential_vars term =
-
+  (* eprintf "dependencies %a@." Term.pp_print_term term; *)
   let d = Term.eval_t (add_dep existential_vars) term in
   let alone, inter = List.fold_left (fun (alone, inter) -> function
       | [v], t ->
@@ -554,25 +543,30 @@ let dependencies existential_vars term =
         else (v,t) :: alone, inter
       | dt -> alone, dt :: inter) ([], []) d in
   (* eprintf "ALONE : %a" pp_order alone; *)
-  let rec order r_eval rest postpone =
+  let rec order r_eval rest postpone last =
     (* eprintf "ORDER : %a" pp_order r_eval; *)
     (* eprintf "REST : %a" pp_rest rest; *)
     (* eprintf "POSTPONE : %a" pp_rest postpone; *)
-    match rest, postpone with
-    | (d,t) :: r, _ ->
+    match rest, postpone, last with
+    | (d,t) :: r, _, _ ->
       let d' = List.filter (fun v ->
           not (List.exists (fun (v', _) -> Var.equal_vars v v') r_eval)) d in
       begin
         match d' with
-        | [] -> order r_eval r postpone
-        | [v] -> order ((v,t) :: r_eval) r postpone
-        | _ -> order r_eval r ((d',t) :: postpone)
+        | [] -> order r_eval r postpone last
+        | [v] -> order ((v,t) :: r_eval) r postpone last
+        | _ -> order r_eval r ((d',t) :: postpone) last
       end
-    | [], _::_ -> order r_eval postpone []
-    | [], [] -> List.rev r_eval
+    | [], _::_, false -> order r_eval (List.rev postpone) [] true
+    | [], _::_, true ->
+      let evs =
+        List.fold_left (fun acc (l, _) -> List.rev_append l acc) [] postpone in
+      failwith (asprintf "Could not solve all equations (%a)."
+                  (pp_print_list Var.pp_print_var ", ") evs)
+    | [], [], _ -> List.rev r_eval
   in
 
-  order alone inter []
+  order alone inter [] false
 
 
 let partial_nnf term =
