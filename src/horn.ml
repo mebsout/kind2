@@ -314,9 +314,10 @@ let temp_vars_to_consts term =
     term
 
 (* Create a new unique fresh temporary state variable *)
-let next_fresh_state_var_id = ref 1
+let mk_fresh_state_var =
 
-let mk_fresh_state_var scope var_type = 
+  let next_fresh_state_var_id = ref 1 in
+  fun scope var_type -> 
 
   let res = 
     StateVar.mk_state_var 
@@ -693,80 +694,6 @@ let skolemize_remaining existential_vars term =
   let t = unlet_term (Term.mk_let b_skos term) in
   t, skos
   
-
-let eq_to_let state_vars term accum = match term with
-
-  (* An equation *)
-  | Term.T.App (s, [l; r]) when s == Symbol.s_eq -> 
-
-    (* Match left-hand side and right-hand side of equation *)
-    (match Term.destruct l, Term.destruct r with
-
-      (* Equation between state variable and free variable *)
-      | Term.T.Var v1, Term.T.Var v2 when 
-          SVS.mem 
-            (Var.state_var_of_state_var_instance v1) 
-            state_vars && 
-          (not 
-             (SVS.mem
-                (Var.state_var_of_state_var_instance v2) 
-                state_vars)) -> 
-        
-        (* Initialize accumulator with single equation, binding the
-           free variable to the state variable *)
-        (Term.construct term, [(v2, Term.mk_var v1)])
-
-      (* Equation between state variable and free variable *)
-      | Term.T.Var v1, Term.T.Var v2 when 
-          SVS.mem
-            (Var.state_var_of_state_var_instance v2)
-            state_vars
-          && 
-          (not
-             (SVS.mem
-                (Var.state_var_of_state_var_instance v1)
-                state_vars)) -> 
-        
-        (* Initialize accumulator with single equation, binding the
-           free variable to the state variable *)
-        (Term.construct term, [(v1, Term.mk_var v2)])
-        
-
-      | _ ->
-
-        (* Other equation, add let binding for collected equations *)
-        (Term.mk_eq (let_for_args [] accum), [])
-        
-    )
-
-  (* Conjunction, can join equations from all conjuncts *)
-  | Term.T.App (s, l) when s == Symbol.s_and -> 
-
-    (* Keep term unchanged and concatenate lists of equations *)
-    (Term.mk_and (List.map fst accum),
-     List.concat (List.map snd accum))
-
-  (* Neither conjunction nor equation, add respective collected
-     equations as let binding to each subterm *)
-  | Term.T.App (s, l) -> (Term.mk_app s (let_for_args [] accum), [])
-
-  (* No equations for constants and variables *)
-  | Term.T.Const s -> (Term.mk_const s, [])
-  | Term.T.Var v -> (Term.mk_var v, [])
-
-  (* Remove attributed terms *)
-  | Term.T.Attr (t, _) -> (t, snd (List.hd accum))
-
-
-let solve_eqs_old state_vars term =
-
-  let t =
-    (match Term.eval_t (eq_to_let state_vars) term with
-     | t, [] -> t
-     | t, e -> Term.mk_let e t)
-  in
-
-  unlet_term t
 
 
 

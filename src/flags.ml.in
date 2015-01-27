@@ -560,10 +560,11 @@ let string_of_input_format = function
   | `Lustre -> "lustre"
   | `Horn -> "horn"
   | `Native -> "native"
+  | `detect -> "detect"
 
 let input_format_values = "lustre, native, horn"
 
-let input_format_default = `Default
+let input_format_default = `detect
 
 (* ********** *) 
 
@@ -643,7 +644,7 @@ type flags =
       mutable debug_log : string option;
       mutable log_level : log_level;
       mutable log_format_xml : bool;
-      mutable input_format : [`Default | input_format];
+      mutable input_format : [`detect | input_format];
       mutable input_file : string option }
     
 (* Defaults for all flags *)
@@ -1218,7 +1219,7 @@ let input_format_spec =
    Arg.String input_format_action, 
    Format.sprintf "Format of input file (available: %s, default: %s)"
                   input_format_values
-                  (string_of_input_format `Lustre))
+                  (string_of_input_format input_format_default))
 
 
 (* ********************************************************************** *)
@@ -1341,9 +1342,9 @@ let input_format () =
      extension *)
   | `Lustre | `Native | `Horn as f -> f
 
-  (* If the input format has not been specified infer it with the file
+  (* If the input format has not been specified, infer it with the file
      extension *)
-  | `Default ->
+  | `detect ->
     try
       let f = input_file () in
       if Filename.check_suffix f "lus"
