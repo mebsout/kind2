@@ -19,6 +19,9 @@
 open Format
 open Lib
 
+(* Change this flag to false to deactivate simplifications. Only change it to
+   compare results in case an optimization goes wrong. This reverts to
+   introducing Skolem for all quantified variable of the Horn clauses. *)
 let do_simplify_eqs = true
 
 module SVS = StateVar.StateVarSet
@@ -28,19 +31,25 @@ module VS = Var.VarSet
   
 module Conv = SMTExpr.Converter (Z3Driver)
 
+(* Useful HString constants *)
+
 let s_set_info = HString.mk_hstring "set-info"
-
 let s_set_logic = HString.mk_hstring "set-logic"
-
 let s_horn = HString.mk_hstring "HORN"
-
 let s_declare_fun = HString.mk_hstring "declare-fun"
-
 let s_pred = HString.mk_hstring "p"
-
 let s_assert = HString.mk_hstring "assert"
-
 let s_check_sat = HString.mk_hstring "check-sat"
+
+(* Useful term constants *)
+
+let t_int_zero = Term.mk_num_of_int 0
+let t_int_one = Term.mk_num_of_int 1
+let t_int_minus_one = Term.mk_app Symbol.s_minus [t_int_one]
+    
+let t_real_zero = Term.mk_dec Decimal.zero
+let t_real_one = Term.mk_dec Decimal.one
+let t_real_minus_one = Term.mk_app Symbol.s_minus [t_real_one]
 
 (*
 
@@ -291,7 +300,7 @@ let temp_vars_to_consts term =
     (List.combine vars consts)
     term
 
-
+(* Create a new unique fresh temporary state variable *)
 let next_fresh_state_var_id = ref 1
 
 let mk_fresh_state_var scope var_type = 
@@ -310,9 +319,7 @@ let mk_fresh_state_var scope var_type =
 
 (* Bind each temporary variable to a fresh state variable *)
 let temp_vars_to_state_vars scope term = 
-  (* Format.eprintf "TEMP VARS TERM : %a@." Term.pp_print_term term; *)
   let vars = temp_vars_of_term term in
-  (* List.iter (Format.eprintf "TEMP VARS = %a@." Var.pp_print_var) vars; *)
   
   let _, sv, svt = 
     List.fold_left
@@ -327,25 +334,17 @@ let temp_vars_to_state_vars scope term =
   in
 
   let state_vars, state_var_terms = List.rev sv, List.rev svt in
-  (* List.iter (Format.eprintf "new TEMP VARS = %a@." Var.pp_print_var) state_vars; *)
   
   let t =Term.mk_let 
     (List.combine vars state_var_terms)
     term
   in
-  (* Format.eprintf "RES TEMP VARS : %a@." Term.pp_print_term t; *)
+
   t, state_vars
   
 
+(* Remove let bindings by propagating the values *)
 let unlet_term term = Term.construct (Term.eval_t (fun t _ -> t) term)
-
-(*
-
-   I(s) => p(s)
-   p(s) & T(s, s') => p(s')
-   p(s) & !Prop(s) => false
-
-*)
 
 
 
@@ -369,15 +368,7 @@ let rec let_for_args accum = function
 
 
 
-let t_int_zero = Term.mk_num_of_int 0
-let t_int_one = Term.mk_num_of_int 1
-let t_int_minus_one = Term.mk_app Symbol.s_minus [t_int_one]
-    
-let t_real_zero = Term.mk_dec Decimal.zero
-let t_real_one = Term.mk_dec Decimal.one
-let t_real_minus_one = Term.mk_app Symbol.s_minus [t_real_one]
-
-
+(* Extract the factor and term of a monomial term *)
 let extract_monomial t = match Term.destruct t with
   | Term.T.Const _ | Term.T.Var _ ->
     let one =
@@ -391,6 +382,8 @@ let extract_monomial t = match Term.destruct t with
   | _ -> assert false 
 
 
+(* Extract the values of constants with their corresponding terms for a
+   polynomial term *)
 let extract_polynomial_eq l r =
   assert (Term.equal r t_int_zero || Term.equal r t_real_zero);
   match Term.destruct l with
@@ -399,6 +392,7 @@ let extract_polynomial_eq l r =
   | Term.T.Var _ | Term.T.Const _ -> [extract_monomial l]
   | _ -> assert false
 
+(* Reconstruct a term from a polynomial *)
 let term_from_poly poly = match poly with
   | [k, _] when Term.equal k t_int_zero -> t_int_zero
   | [k, _] when Term.equal k t_real_zero -> t_real_zero
@@ -407,6 +401,10 @@ let term_from_poly poly = match poly with
   | _ -> Term.mk_app Symbol.s_plus
           (List.map (fun (k,m) -> Term.mk_app Symbol.s_times [k; m]) poly)
 
+
+(* Look for the value (if it exists) for a variable v in a polyinomial equation
+   of the form 0 = k1 x1 + ... + kv v + ... + kn xn. In this case it returns the
+   value (if the coefficient kv of v is non nul)  - k1/kv x1 - ... - kn/kv xn *)
 let find_var_value v poly =
   match List.partition (fun (_, m) -> Term.equal m (Term.mk_var v)) poly with
   | [], _ -> None
@@ -435,6 +433,8 @@ let find_var_value v poly =
   | _ -> assert false
 
 
+(* Solve an equation on variable v. Returns None if the equation is not
+   solvable otherwise returns a value for v. *)
 let solve_eq v teq =
   match Term.destruct (Simplify.simplify_term [] teq) with
   | Term.T.App (s, [l; r]) when s == Symbol.s_eq ->
@@ -443,11 +443,8 @@ let solve_eq v teq =
   | _ -> None
 
 
-let already_in_subst v =
-  List.exists (List.exists (fun (v', _) -> Var.equal_vars v v'))
-
-
-
+(* Try to solve existential variables following an evaluation order which
+   contains variables and the term in which they appear, given as argument. *)
 let solve_existential_order eval_order =
   let r_subst = 
     List.fold_left (fun subst (v,t) ->
@@ -458,7 +455,7 @@ let solve_existential_order eval_order =
   in
   List.rev r_subst
 
-
+(* Remove trivial equations of a term. *)
 let remove_trivial_eq term =
   Term.map
     (fun _ t -> match Term.destruct t with
@@ -480,7 +477,9 @@ let remove_trivial_eq term =
     ) term
 
 
-
+(* Cluster let bindings as much as possible to regroup all independant
+   bindings. This is done to avoid constructing cascade of lets, which requires
+   an expensive renaming de Bruijn indexes each time one binding is added. *)
 let cluster_lets l =
   let clusters, last, _ =
     List.fold_left (fun (acc, cluster, currv) (v, t) ->
@@ -495,6 +494,9 @@ let cluster_lets l =
   List.rev clusters
 
 
+
+(* Try to eliminate the existential variable {e} in a subterm {term} where no
+   disjunction appear. *)
 let elim_in_subterm e term =
   let t = match e with
     | [] -> term
@@ -508,7 +510,8 @@ let elim_in_subterm e term =
   remove_trivial_eq t
 
 
-
+(* Add a dependencies between existential vars found in a subterm. To use with
+   Term.eval_t. *)
 let add_dep existential_vars term acc =
   match term with
   | Term.T.App (s, _) when s == Symbol.s_eq ->
@@ -521,34 +524,44 @@ let add_dep existential_vars term acc =
   | _ -> []
 
 
-(* let pp_order fmt l = *)
-(*   List.iter (fun (v,t) -> *)
-(*       fprintf fmt "<- %a [%a] " Var.pp_print_var v Term.pp_print_term t) l; *)
-(*   fprintf fmt "@." *)
+
+(* Printing evaluation orders (just for debugging). *)
+
+let pp_order fmt l =
+  List.iter (fun (v,t) ->
+      fprintf fmt "<- %a [%a] " Var.pp_print_var v Term.pp_print_term t) l;
+  fprintf fmt "@."
 
 
-(* let pp_rest fmt l = *)
-(*   List.iter (fun (d,t) -> *)
-(*       fprintf fmt "["; *)
-(*       List.iter (fun v -> fprintf fmt "%a," Var.pp_print_var v) d; *)
-(*       fprintf fmt "] [[[%a]]]" Term.pp_print_term t; *)
-(*     ) l; *)
-(*   fprintf fmt "@." *)
+let pp_rest fmt l =
+  List.iter (fun (d,t) ->
+      fprintf fmt "[";
+      List.iter (fun v -> fprintf fmt "%a," Var.pp_print_var v) d;
+      fprintf fmt "] [[[%a]]]" Term.pp_print_term t;
+    ) l;
+  fprintf fmt "@."
 
+
+(* Compute an evaluatuion order thanks to dependencies for eliminating
+   existential variables. *)
 let dependencies existential_vars term =
-  (* eprintf "dependencies %a@." Term.pp_print_term term; *)
+
+  (debug horn "dependencies %a@." Term.pp_print_term term in ());
+
+  (* Compute inter-dependencies between variables. *)
   let d = Term.eval_t (add_dep existential_vars) term in
+  (* Partition variables that appear alone (no dependency) from the ones that
+     are inter-dependant. *)
   let alone, inter = List.fold_left (fun (alone, inter) -> function
       | [v], t ->
         if List.exists (fun (v', _) -> Var.equal_vars v v') alone then
           alone, inter
         else (v,t) :: alone, inter
       | dt -> alone, dt :: inter) ([], []) d in
-  (* eprintf "ALONE : %a" pp_order alone; *)
+  (* Recursively order variables once dependencies can be resolved. The
+     parameter last is set to true after one round of postponing to prevent
+     infinite recursion. *)
   let rec order r_eval rest postpone last =
-    (* eprintf "ORDER : %a" pp_order r_eval; *)
-    (* eprintf "REST : %a" pp_rest rest; *)
-    (* eprintf "POSTPONE : %a" pp_rest postpone; *)
     match rest, postpone, last with
     | (d,t) :: r, _, _ ->
       let d' = List.filter (fun v ->
@@ -570,9 +583,20 @@ let dependencies existential_vars term =
     | [], [], _ -> List.rev r_eval
   in
 
-  order alone inter [] false
+  let eval_order = order alone inter [] false in
+
+  debug horn
+    "Evaluation order: %a" pp_order eval_order
+  in
+
+  eval_order
 
 
+
+(* Push negation under Boolean connectors.
+
+   This is not used anymore because it obfuscate some constructions that are
+   useful to remove existential variables. *)
 let partial_nnf term =
   let rec nnf positive term =
     match Term.destruct term with
@@ -601,12 +625,15 @@ let partial_nnf term =
   nnf true term
 
     
-  
+(* Solve (as much as possible) equations that contain existential variables in
+   a subterm. *)
 let solve_eqs_subterm existential_vars term =
   elim_in_subterm
     (solve_existential_order (dependencies existential_vars term)) term
 
 
+(* Remove as much existential variables as possible of a subterm by solving its
+   equations. *)
 let solve_eqs existential_vars term =
   let t =
     Term.eval_t (fun t acc -> match t with
@@ -622,7 +649,9 @@ let solve_eqs existential_vars term =
   solve_eqs_subterm existential_vars t
  
 
-
+(* Create a fresh skolem constant. Because Skolems must be new in every state,
+   we encode them by state variables. It is important that there exists no
+   relation between variables _SKO*.k and _SKO*.(k+1). *)
 let fresh_skolem =
   let n = ref 0 in
   fun scope ty ->
@@ -630,12 +659,15 @@ let fresh_skolem =
     let s = sprintf "_SKO%d" !n in
     StateVar.mk_state_var s scope ty
 
+(* Returns true if a state variable is used to encode a Skolem constant. *)
 let is_skolem_statevar v =
   let s = StateVar.string_of_state_var v in
   try String.sub s 0 4 = "_SKO"
   with Invalid_argument _ -> false
 
 
+(* Skolemize all existential variables that remain in the term. The newly
+   introduced Skolem variables are also returned. *)
 let skolemize_remaining existential_vars term =
   let vs = Term.vars_of_term term in
   let rem = List.filter (fun v -> VS.mem v vs) existential_vars in
@@ -690,9 +722,6 @@ let eq_to_let state_vars term accum = match term with
       | _ ->
 
         (* Other equation, add let binding for collected equations *)
-        
-        (* Format.eprintf "lfa accum = %d@." (List.length accum); *)
-        (* List.iter (fun (t, e) -> Format.eprintf "%a@." Term.pp_print_term (Term.mk_let e t)) accum; *)
         (Term.mk_eq (let_for_args [] accum), [])
         
     )
@@ -718,27 +747,19 @@ let eq_to_let state_vars term accum = match term with
 
 let solve_eqs_old state_vars term =
 
-  let t =   (* unlet_term *)
+  let t =
     (match Term.eval_t (eq_to_let state_vars) term with
      | t, [] -> t
      | t, e -> Term.mk_let e t)
   in
-  (* Format.eprintf "BEFORE UNLET : %a\n@." Term.pp_print_term t; *)
+
   unlet_term t
 
 
 
-(* let rec look_for_eq v = function *)
-(*   | Term.T.App (s, l) when s == Symbol.s_and -> *)
-    
-
-
-(* let elim_existential_var v state_vars term = *)
-
-(*   assert false *)
-  
-
-
+(* Add a Horn clause to the transition system. The first argument is used to
+   accumulate inrtoduced Skolem variables, inital conditions, transition
+   relations that were found and properties. *)
 let add_horn (skolems, init, trans, props) scope
     literals vars_0 vars_1 var_pos var_neg = 
   
@@ -762,33 +783,29 @@ let add_horn (skolems, init, trans, props) scope
     (* Predicate occurs only negated: property clause 
 
        p(s) & !Prop(s) => false
-
     *)
     | [], _ -> 
 
-      (* eprintf "add_horn PROP ...@."; *)
+      (debug horn "add_horn PROP ...@." in ());
 
       let neg_term, existential_vars =
         temp_vars_to_state_vars
           scope
           (Term.mk_let 
              (List.combine var_neg (List.map Term.mk_var vars_0))
-             ((* Term.negate *) (Term.mk_and (List.map Term.negate literals)))) in
-      (* (Term.mk_or literals))) *)
+             (Term.mk_and (List.map Term.negate literals))) in
       
       let neg_term = unlet_term neg_term in
 
-      (* Format.eprintf "PROP : %a@." Term.pp_print_term term; *)
       let neg_term' =
         if do_simplify_eqs then solve_eqs existential_vars neg_term
         else neg_term in
-      (* let term' = if true then solve_eqs_old state_vars term else term in *)
-      (* Format.eprintf "PROP afeter solver : %a@." Term.pp_print_term term'; *)
 
       let neg_term', sko_vs = skolemize_remaining existential_vars neg_term' in
       
       let term' = Term.negate neg_term' in
-      (* eprintf " done@."; *)
+
+      (debug horn "PROP : %a@." Term.pp_print_term term' in ());
       
       sko_vs @ skolems, init, trans,
       ("P", TermLib.PropAnnot Lib.dummy_pos, term') :: props
@@ -797,12 +814,10 @@ let add_horn (skolems, init, trans, props) scope
     (* Predicate occurs only positive: initial state constraint
 
        I(s) => p(s)
-       
     *)
     | _, [] -> 
 
-      (* eprintf "add_horn INIT ...@."; *)
-
+      (debug horn "add_horn INIT ...@." in ());
       
       let term, existential_vars =
         temp_vars_to_state_vars
@@ -814,16 +829,13 @@ let add_horn (skolems, init, trans, props) scope
       
       let term = unlet_term term in
 
-      (* Format.eprintf "INIT : %a@." Term.pp_print_term term; *)
-      (* Format.eprintf "INIT SIMPLIFIED  : %a@." Term.pp_print_term (Simplify.simplify_term [] term); *)
       let term' =
         if do_simplify_eqs then solve_eqs existential_vars term
         else term in
-      (* let term' = if true then solve_eqs_old state_vars term else term in *)
-      (* Format.eprintf "INIT afeter solver : %a@." Term.pp_print_term term'; *)
-      (* Format.eprintf "INIT SIMPLIFIED  : %a@." Term.pp_print_term (Simplify.simplify_term [] term'); *)
 
       let term', sko_vs = skolemize_remaining existential_vars term' in
+
+      (debug horn "INIT : %a@." Term.pp_print_term term' in ());
 
 
       (* Symbol for initial state constraint for node *)
@@ -840,7 +852,7 @@ let add_horn (skolems, init, trans, props) scope
       let pred_def_init = 
         (* Name of symbol *)
         (init_uf_symbol,
-         ((* Init flag? *)
+         ((* Init flag *)
            [ TransSys.init_flag_var TransSys.init_base ] @
            vars_0 @ sko_vs,
            (* Add constraint for init flag to be true *)
@@ -850,20 +862,17 @@ let add_horn (skolems, init, trans, props) scope
          ))
       in
       
-      (* eprintf " done@."; *)
-      
       sko_vs @ skolems, pred_def_init :: init, trans, props
 
 
     (* Predicate occurs positive and negative: transition relation
 
         p(s) & T(s, s') => p(s')
-       
     *)
     | _, _ -> 
 
-      (* eprintf "add_horn TRANS ...@."; *)
-      
+      (debug horn "add_horn TRANS ...@." in ());
+
       let term, existential_vars =
         temp_vars_to_state_vars
           scope
@@ -873,20 +882,16 @@ let add_horn (skolems, init, trans, props) scope
                 (List.combine var_pos (List.map Term.mk_var vars_1))
                 (Term.mk_and (List.map Term.negate_simplify literals))))
       in
-      
-      (* eprintf "  unlet@."; *)
 
       let term = unlet_term term in
-
-      (* eprintf "  solve@."; *)
 
       let term' =
         if do_simplify_eqs then solve_eqs existential_vars term
         else term in
-      (* let term' = if true then solve_eqs_old state_vars term else term in *)
 
       let term', sko_vs = skolemize_remaining existential_vars term' in
 
+      (debug horn "TRANS : %a@." Term.pp_print_term term' in ());
 
       (* Symbol for transition relation for node *)
       let trans_uf_symbol = 
@@ -912,27 +917,11 @@ let add_horn (skolems, init, trans, props) scope
               term']
          ))
       in
-
-      (* eprintf " done@."; *)
       
       sko_vs @ skolems, init, pred_def_trans :: trans, props
 
 
-(* type current_subrange = *)
-(*     Sub_Empty | Sub_Omega | Sub_Range of Numeral.t * Numeral.t *)
-
-
-(* let find_trivial_subranges state_vars init trans = *)
-(*   let all_empty = *)
-(*     List.fold_left (fun acc sv -> *)
-(*         if Type.equal_types Type.Int (StateVar.type_of_state_var sv) then *)
-(*           SVM.add sv Sub_Empty acc *)
-(*         else acc *)
-(*       ) SVM.empty state_vars in *)
-
-(*   let adasdiojfiow = *)
-(*     Term.eval_t *)
-
+(* Parse a Horn clauses problem. *)
 let rec parse acc sym_p_opt lexbuf = 
 
   (* Parse S-expression *)
@@ -1056,19 +1045,17 @@ let rec parse acc sym_p_opt lexbuf =
 
        | Some (sym_p, vars_0, vars_1) -> 
 
-         (* Format.eprintf "SEXPR: %a@." HStringSExpr.pp_print_sexpr e; *)
-
          let expr = Conv.expr_of_string_sexpr e in
 
-         (* Format.eprintf "EXPR: %a@." Term.pp_print_term expr; *)
+         (* Clausify at top level *)
          let clause = clause_of_expr expr in
-         (* eprintf "CLAUSE :@."; *)
-         (* List.iter (Format.eprintf " -- %a@." Term.pp_print_term) (List.map unlet_term clause); *)
-         
+
+         (* Indentify state variables and classify clauses based on the polarity
+         of the predicate {p} *)
          let var_pos, var_neg, clause' = classify_clause sym_p clause in
 
-         let acc = add_horn acc [] (* scope? *)
-             clause' vars_0 vars_1 var_pos var_neg in
+         (* Construct kind2 formulas from this horn clause *)
+         let acc = add_horn acc [] clause' vars_0 vars_1 var_pos var_neg in
 
          (* Continue *)
          parse acc sym_p_opt lexbuf)
@@ -1089,7 +1076,8 @@ let rec parse acc sym_p_opt lexbuf =
               HStringSExpr.pp_print_sexpr e))
 
 
-(* Parse SMTLIB2 Horn format from channel *)
+(* Parse SMTLIB2 Horn format from channel. The input problem must be in a (big)
+   monolithic predicate used in exactly 3 Horn Clauses. *)
 let of_channel in_ch =   
 
   (* Initialise buffer for lexing *)
@@ -1098,7 +1086,8 @@ let of_channel in_ch =
   parse ([], [], [], []) None lexbuf
 
 
-(* Parse SMTLIB2 Horn format from file *)
+(* Parse SMTLIB2 Horn format from file and construct an internal transition
+   system. *)
 let of_file filename = 
 
   (* Open the given file for reading *)
@@ -1111,9 +1100,6 @@ let of_file filename =
      "%a"
      TransSys.pp_print_trans_sys transSys
   in
-
-  (* Format.eprintf "------- TRANSITION SYSTEM ---------\n\n %a@." *)
-  (*   TransSys.pp_print_trans_sys transSys; *)
 
   transSys
 
@@ -1180,7 +1166,9 @@ let pp_print_state_var_pt state_var_width val_width ppf (state_var, values) =
 let filter_out_skolems model =
   List.filter (fun (v, _) -> not (is_skolem_statevar v)) model
 
-(* Pretty-print a model *)
+(* Pretty-print a model without the values for the Skolem variables. Because
+   they are not original state variables, their values are generally not
+   useful. *)
 let pp_print_path_pt ppf model = 
   let model = filter_out_skolems model in
   let state_var_width, val_width = widths_of_model 0 0 model in
