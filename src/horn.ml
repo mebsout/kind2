@@ -608,7 +608,6 @@ let solve_eqs_subterm existential_vars term =
 
 
 let solve_eqs existential_vars term =
-  let nnf_term = partial_nnf term in
   let t =
     Term.eval_t (fun t acc -> match t with
         
@@ -618,7 +617,7 @@ let solve_eqs existential_vars term =
         | Term.T.App (s, l) when s == Symbol.s_or ->
           Term.mk_or (List.map (solve_eqs_subterm existential_vars) acc)
             
-        | _ -> Term.construct t) nnf_term
+        | _ -> Term.construct t) term
   in
   solve_eqs_subterm existential_vars t
  
