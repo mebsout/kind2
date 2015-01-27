@@ -16,12 +16,48 @@
 
 *)
 
+
+(* Parser for verification problems in the Horn clauses format  
+   
+   The input problem must be in a (big) monolithic predicate used in exactly
+   three clauses (written using SMT-LIB Boolean operators, and explicit
+   quantifiers for all variables). The single and only predicate must be named
+   {p}:
+   
+    I(s) => p(s)
+    p(s) & T(s, s') => p(s')
+    p(s) & !Prop(s) => false
+
+
+   horn ::= 
+   |   (forall (quantified-variables) body) 
+   |   (not (exists (quantified-variables) co-body)) 
+
+   body ::= 
+   |   (=> co-body body)
+   |   (or literal* )
+   |   literal
+
+   co-body ::=
+   |   (and literal* )
+   |   literal
+
+   literal ::=
+   |   formula over interpreted relations (such as =, <=, >, ...)
+   |   (negated) uninterpreted predicate with arguments
+
+   A body has at most one uninterpreted relation with positive polarity, 
+   and a co-body uses only uninterpreted relations with positive polarity.
+
+*)
+
+
 open Format
 open Lib
 
 (* Change this flag to false to deactivate simplifications. Only change it to
    compare results in case an optimization goes wrong. This reverts to
-   introducing Skolem for all quantified variable of the Horn clauses. *)
+   introducing Skolem for all quantified variables of the Horn clauses. *)
 let do_simplify_eqs = true
 
 module SVS = StateVar.StateVarSet
@@ -51,29 +87,6 @@ let t_real_zero = Term.mk_dec Decimal.zero
 let t_real_one = Term.mk_dec Decimal.one
 let t_real_minus_one = Term.mk_app Symbol.s_minus [t_real_one]
 
-(*
-
-horn ::= 
-  |   (forall (quantified-variables) body) 
-  |   (not (exists (quantified-variables) co-body)) 
-
-body ::= 
-  |   (=> co-body body)
-  |   (or literal* )
-  |   literal
-
-co-body ::=
-  |   (and literal* )
-  |   literal
-
-literal ::=
-  |   formula over interpreted relations (such as =, <=, >, ...)
-  |   (negated) uninterpreted predicate with arguments
-
-A body has at most one uninterpreted relation with positive polarity, 
-and a co-body uses only uninterpreted relations with positive polarity.
-
-*)
 
 module H = Hashcons
 
