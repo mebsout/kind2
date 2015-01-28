@@ -26,7 +26,9 @@
    
     I(s) => p(s)
     p(s) & T(s, s') => p(s')
-    p(s) & !Prop(s) => false
+    p(s) & !Prop1(s) => false
+    ...
+    p(s) & !Propn(s) => false
 
 
    horn ::= 
@@ -696,6 +698,12 @@ let skolemize_remaining existential_vars term =
   
 
 
+let fresh_prop_name =
+  let n = ref 0 in
+  fun () ->
+    incr n;
+    sprintf "P%d" !n
+
 
 (* Add a Horn clause to the transition system. The first argument is used to
    accumulate inrtoduced Skolem variables, inital conditions, transition
@@ -748,7 +756,7 @@ let add_horn (skolems, init, trans, props) scope
       (debug horn "PROP : %a@." Term.pp_print_term term' in ());
       
       sko_vs @ skolems, init, trans,
-      ("P", TermLib.PropAnnot Lib.dummy_pos, term') :: props
+      (fresh_prop_name (), TermLib.PropAnnot Lib.dummy_pos, term') :: props
 
 
     (* Predicate occurs only positive: initial state constraint

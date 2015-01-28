@@ -26,7 +26,8 @@
 
 (** Parse from the file Parse SMTLIB2 Horn format from file and construct an
     internal transition system. The input problem must be in a (big) monolithic
-    predicate used in exactly 3 Horn Clauses.
+    predicate used in three Horn Clauses (or more if there are several
+    properties).
 
     This is to be used with the following converter (for the moment):
     http://www.philipp.ruemmer.org/mono-lazabs.jar
