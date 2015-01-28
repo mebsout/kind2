@@ -893,7 +893,7 @@ let rec parse acc sym_p_opt lexbuf =
        let sko_st = List.map Var.state_var_of_state_var_instance sko_vars in
        
        TransSys.mk_trans_sys [] (* scope *) (state_vars @ sko_st)
-         init trans [] props TransSys.Horn
+         init trans [] (List.rev props) TransSys.Horn
          
      | _ -> assert false)
     
