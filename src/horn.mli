@@ -60,7 +60,7 @@ val of_file : string -> TransSys.t
 
 (** Pretty-print a counter example *)
 val pp_print_path_pt :
-  Format.formatter -> (StateVar.t * Term.t list) list -> unit
+  Format.formatter -> (StateVar.t * Model.term_or_lambda list) list -> unit
 
 
 (* 

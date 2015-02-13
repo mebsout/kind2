@@ -1074,7 +1074,7 @@ let rec simplify_term_node default_of_var uf_defs model fterm args =
 
         (* Free variable without assignment in model *)
         | exception Not_found -> 
-        
+
           Term.eval_t
             (simplify_term_node default_of_var uf_defs model)
             (default_of_var v)
