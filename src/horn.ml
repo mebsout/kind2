@@ -508,16 +508,16 @@ let pp_order fmt l =
 (* Try to eliminate the existential variable {e} in a subterm {term} where no
    disjunction appear. *)
 let elim_in_subterm e term =
-  eprintf "elin %a@." pp_order e;
+  (* eprintf "elin %a@." pp_order e; *)
   let t = match e with
     | [] -> term
     | _ ->
       let cls = cluster_lets e in
       List.fold_right (fun cl t -> Term.mk_let cl t) cls term
   in
-  Format.eprintf "BEFORE UNLET : %a\n@." Term.pp_print_term t;
+  (* Format.eprintf "BEFORE UNLET : %a\n@." Term.pp_print_term t; *)
   let t = unlet_term t in
-  eprintf "  remove trivial@.";
+  (* eprintf "  remove trivial@."; *)
   remove_trivial_eq t
 
 
@@ -645,19 +645,33 @@ let solve_eqs_subterm existential_vars term =
 
 (* Remove as much existential variables as possible of a subterm by solving its
    equations. *)
+let rec solve_eqs existential_vars term =
+  let t' = Term.destruct term in
+  match t' with
+  | Term.T.App (s, l) when s == Symbol.s_and ->
+
+    let l' = List.map (fun st ->
+        let vst = VS.inter (Term.vars_of_term st) existential_vars in
+        let unique_evars = List.fold_left (fun vst ot ->
+            if ot == st then vst
+            else VS.diff vst (Term.vars_of_term ot)
+          ) vst l in
+        solve_eqs unique_evars st
+      ) l in
+
+    let t' = Term.mk_and l' in
+    solve_eqs_subterm (VS.elements existential_vars) t'
+
+  | Term.T.App (s, l) ->
+
+    Term.mk_app s (List.map (solve_eqs existential_vars) l)
+
+  | _ -> Term.construct t'
+
 let solve_eqs existential_vars term =
-  let t =
-    Term.eval_t (fun t acc -> match t with
-        
-        | Term.T.App (s, l) when s == Symbol.s_and ->
-          Term.mk_and acc
-            
-        | Term.T.App (s, l) when s == Symbol.s_or ->
-          Term.mk_or (List.map (solve_eqs_subterm existential_vars) acc)
-            
-        | _ -> Term.construct t) term
-  in
-  solve_eqs_subterm existential_vars t
+  let sve =
+    List.fold_left (fun acc e -> VS.add e acc) VS.empty existential_vars in
+  solve_eqs sve term
  
 
 (* Create a fresh skolem constant. Because Skolems must be new in every state,
@@ -980,7 +994,6 @@ let rec parse acc preds_args lexbuf =
           (fun (i, vars_0, vars_1) t -> 
 
              let sv = StateVar.mk_state_var (string_of_int i) [p_name] t in
-
              (succ i, 
               (Var.mk_state_var_instance sv Numeral.zero) :: vars_0, 
               (Var.mk_state_var_instance sv Numeral.one) :: vars_1))
