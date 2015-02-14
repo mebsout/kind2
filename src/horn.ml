@@ -75,7 +75,6 @@ let s_set_info = HString.mk_hstring "set-info"
 let s_set_logic = HString.mk_hstring "set-logic"
 let s_horn = HString.mk_hstring "HORN"
 let s_declare_fun = HString.mk_hstring "declare-fun"
-let s_pred = HString.mk_hstring "p"
 let s_assert = HString.mk_hstring "assert"
 let s_check_sat = HString.mk_hstring "check-sat"
 
@@ -771,11 +770,7 @@ let add_horn (skolems, init, trans, props)
 
     | [], [] -> 
 
-      raise 
-        (Failure 
-           (Format.asprintf 
-              "Clause without occurrence of predicate %a"
-              HString.pp_print_hstring s_pred))
+      failwith "Clause without occurrence of predicates"
 
 
     (* Predicate occurs only negated: property clause 
