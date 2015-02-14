@@ -60,13 +60,14 @@ open Lib
 (* Change this flag to false to deactivate simplifications. Only change it to
    compare results in case an optimization goes wrong. This reverts to
    introducing Skolem for all quantified variables of the Horn clauses. *)
-let do_simplify_eqs = true
+let do_simplify_eqs = false 
 
 module SVS = StateVar.StateVarSet
 module SVM = StateVar.StateVarMap
 module VM = Var.VarMap
 module VS = Var.VarSet
 module SM = Symbol.SymbolMap
+module SS = Symbol.SymbolSet
 
 (* Useful HString constants *)
 
@@ -97,6 +98,28 @@ let sexpr_conv = GenericSMTLIBDriver.smtlib_string_sexpr_conv
 let type_of_sexpr = sexpr_conv.GenericSMTLIBDriver.type_of_sexpr
 let expr_of_sexpr = GenericSMTLIBDriver.expr_of_string_sexpr
 
+
+module HUFS = Hashtbl.Make (struct
+    type t = Symbol.t UnionFind.t
+    let equal = UnionFind.equal
+    let hash = Hashtbl.hash
+  end)
+  
+let classes l =
+  let h = HUFS.create (List.length l) in
+  List.iter (fun x ->
+      let rx = UnionFind.find x in
+      let clx =
+        try HUFS.find h rx
+        with Not_found -> [] in
+      HUFS.replace h rx (UnionFind.data x :: clx)
+    ) l;
+  HUFS.fold (fun _ cl acc -> cl :: acc) h []
+
+(* Remove let bindings by propagating the values *)
+let unlet_term term = Term.construct (Term.eval_t (fun t _ -> t) term)
+
+
 (* Collect literals from a horn clause body *)
 let rec literals_of_body accum = function
 
@@ -104,7 +127,10 @@ let rec literals_of_body accum = function
   | [] -> accum
 
   (* Take first expression *)
-  | (polarity, expr) :: tl -> match Term.destruct expr with 
+  | (polarity, expr) :: tl ->
+
+    (* eprintf "literals_of_body %a@." Term.pp_print_term expr; *)
+    match Term.destruct expr with 
 
     (* Expression is a disjunction in a body or a conjunction in a
        co-body *)
@@ -132,11 +158,17 @@ let rec literals_of_body accum = function
         ((false, l) :: 
          (polarity, 
           match r with 
-            | [] -> assert false 
-            | [d] -> d
-            | _ -> Term.mk_implies r) :: 
+          | [] -> assert false 
+          | [d] -> d
+          | _ -> Term.mk_implies r) :: 
          tl)
 
+    (* Expression is negation *)
+    | Term.T.App (s, [t]) when s == Symbol.s_not ->
+
+      literals_of_body accum ((not polarity, t) :: tl)
+      
+      
     (* Expression is a literal, add to accumulator *)
     | _ -> 
 
@@ -164,61 +196,51 @@ let clause_of_expr expr =
 
     (* Instantiate bound variables in lambda abstraction with fresh
        variables *)
-    Term.T.instantiate lambda vars 
+    Term.T.instantiate lambda vars
 
   in
 
-  (* Get node of term *)
-  match Term.T.node_of_t expr with 
+
+  let rec instantiate_vars_rec polarity expr =
+
+    (* Get node of term *)
+    match Term.T.node_of_t expr, polarity with 
 
     (* Universally quantified expression *)
-    | Term.T.Forall l -> 
+    | Term.T.Forall l, true -> 
 
-      (* Instantiate bound variables in lambda abstraction with fresh
-         variables *)
-      let l' = instantiate_lambda l in
+      instantiate_lambda l
 
-      (* Get literals in body of horn clause *)
-      let literals = literals_of_body [] [(true, l')] in
+    (* Negated existentially quantified expression *)
+    | Term.T.Exists l, false ->
 
-      literals
-
+      Term.mk_not (instantiate_lambda l)
+        
     (* Negated expression *)
-    | Term.T.Node (s, [t]) when s == Symbol.s_not -> 
+    | Term.T.Node (s, [t]), _ when s == Symbol.s_not -> 
 
-      (match Term.T.node_of_t t with 
+      instantiate_vars_rec (not polarity) t
 
-        (* Negated existentially quantified expression *)
-        | Term.T.Exists l -> 
+    | Term.T.Exists l, true | Term.T.Forall l, false ->
 
-          (* Instantiate bound variables in lambda abstraction with fresh
-             variables *)
-          let l' = instantiate_lambda l in
+      failwith ("Cannot deal with existential quantifiers in Horn clauses.")
+      
+    | _, true -> expr
+      
+    | _, false -> Term.mk_not expr
+                    
+  in
 
-          (* Get literals in co-body of horn clause *)
-          let literals = 
-            literals_of_body
-              [] 
-              [(false, l')]
-          in
+  let expr = instantiate_vars_rec true expr in
+  let l = Term.map (fun _ t -> instantiate_vars_rec true t) expr in
+  let l = unlet_term l in
+  (* eprintf "after inst: %a@." Term.pp_print_term l; *)
 
-          literals
+  (* Get literals in body of horn clause *)
+  let literals = literals_of_body [] [(true, l)] in
 
-        | _ -> 
+  literals
 
-          raise 
-            (Invalid_argument 
-               (Format.asprintf 
-                  "Expression is not a horn clause: %a"
-                  Conv.pp_print_expr expr)))
-
-    | _ -> 
-
-      raise 
-        (Invalid_argument 
-           (Format.asprintf 
-              "Expression is not a horn clause: %a"
-              Conv.pp_print_expr expr))
 
 (*
 
@@ -237,6 +259,10 @@ let rec polarity_of_pred sym_p polarity expr = match Term.destruct expr with
 
     Some (polarity, a)
 
+  | Term.T.Const s when s == sym_p -> 
+
+    Some (polarity, [])
+
   | Term.T.App (s, [e]) when s == Symbol.s_not -> 
     polarity_of_pred sym_p (not polarity) e
 
@@ -252,40 +278,39 @@ let classify_clause preds literals =
   List.fold_left 
     (fun (pos, neg, acc) expr -> 
 
-       List.fold_left 
-         (fun (pos, neg, acc) sym_p -> 
+       let pos, neg, is_pred = List.fold_left (fun (pos, neg, is_pred) sym_p -> 
 
-            (* Get polarity of predicate in literal *)
-            match polarity_of_pred sym_p true expr with 
-            | Some (true, args) ->
+           (* Get polarity of predicate in literal *)
+           match polarity_of_pred sym_p true expr with 
+           | Some (true, args) ->
 
-              if sym_already_in sym_p pos then
-                raise 
-                  (Invalid_argument
-                     (Format.asprintf
-                        "Predicate %a must occur at most once positvely"
-                        Symbol.pp_print_symbol sym_p));
+             if sym_already_in sym_p pos then
+               raise 
+                 (Invalid_argument
+                    (Format.asprintf
+                       "Predicate %a must occur at most once positvely"
+                       Symbol.pp_print_symbol sym_p));
 
-              ((sym_p, args) :: pos, neg, acc)
+             ((sym_p, args) :: pos, neg, true)
 
-            | Some (false, args) -> 
+           | Some (false, args) -> 
 
-              if sym_already_in sym_p neg then
-                raise 
-                  (Invalid_argument
-                     (Format.asprintf
-                        "Predicate %a must occur at most once negatively"
-                        Symbol.pp_print_symbol sym_p));
+             if sym_already_in sym_p neg then
+               raise 
+                 (Invalid_argument
+                    (Format.asprintf
+                       "Predicate %a must occur at most once negatively"
+                       Symbol.pp_print_symbol sym_p));
 
-              (pos, (sym_p, args) :: neg, acc)
+             (pos, (sym_p, args) :: neg, true)
 
-            | None -> (pos, neg, (expr :: acc)))
-         
-         (pos, neg, acc)
-         preds
-    )
-    ([], [], [])
-    literals
+           | None -> (pos, neg, is_pred)
+         ) (pos, neg, false) preds
+       in
+
+       pos, neg, if is_pred then acc else expr :: acc
+       
+    ) ([], [], []) literals
 
 
 (* Return the list of free variables in the term *)
@@ -346,9 +371,6 @@ let free_vars_to_state_vars term =
 
   t, state_vars
   
-
-(* Remove let bindings by propagating the values *)
-let unlet_term term = Term.construct (Term.eval_t (fun t _ -> t) term)
 
 
 
@@ -715,12 +737,30 @@ let fresh_prop_name =
 
 
 
+let class_of sym_p cl = List.find (List.exists (Symbol.equal_symbols sym_p)) cl
+
+let preds_out_classes pos p_classes preds_args =
+  (* eprintf "preds_out_classes:"; *)
+  (* List.iter (fun (p, _) -> eprintf " %a" Symbol.pp_print_symbol p) pos; *)
+  (* eprintf "@."; *)
+  
+  let r =  List.fold_left (fun out (p, _) ->
+      let cl = class_of p p_classes in
+      SM.filter (fun sp _ ->
+          not (List.exists (Symbol.equal_symbols sp) cl)) out
+    ) preds_args pos
+  in
+
+  (* eprintf "res="; *)
+  (* SM.iter (fun s _ -> eprintf " %a" Symbol.pp_print_symbol s) r; *)
+  (* eprintf "@."; *)
+  r
 
 (* Add a Horn clause to the transition system. The first argument is used to
    accumulate inrtoduced Skolem variables, inital conditions, transition
    relations that were found and properties. *)
 let add_horn (skolems, init, trans, props)
-    literals preds_args pos neg = 
+    literals preds_args pos neg p_classes = 
 
   match pos, neg with 
 
@@ -742,23 +782,29 @@ let add_horn (skolems, init, trans, props)
 
       (debug horn "add_horn PROP ...@." in ());
 
-      let extra_eqs =
-        List.fold_left (fun acc (sym_p, args) ->
-            let p_0, _, vars_0, _ = SM.find sym_p preds_args in
-            let acc = Term.mk_eq [Term.mk_var p_0; Term.t_true] :: acc in
-            List.fold_left2 (fun acc v0 t0 ->
+      let extra_eqs, ps =
+        List.fold_left (fun (acc, ps) (sym_p, args) ->
+            let p_0, _, vars_0, _, _ = SM.find sym_p preds_args in
+            let acc = List.fold_left2 (fun acc v0 t0 ->
                 Term.mk_eq [Term.mk_var v0; t0] :: acc)
-              acc vars_0 args
-          ) [] neg
+                acc vars_0 args in
+            let ps = Term.mk_eq [Term.mk_var p_0; Term.t_true] :: ps in
+            acc, ps
+          ) ([], []) neg
       in
       
       let neg_term, existential_vars =
         free_vars_to_state_vars
           (Term.mk_and
-             (List.rev_append extra_eqs
-                (List.map Term.negate_simplify literals))) in
+             (ps @
+              [Term.mk_and
+                 (List.rev_append extra_eqs
+                    (List.map Term.negate_simplify literals))]
+             )
+          )
+      in
 
-      (* let neg_term = unlet_term neg_term in *)
+      let neg_term = unlet_term neg_term in
 
       let neg_term' =
         if do_simplify_eqs then solve_eqs existential_vars neg_term
@@ -784,7 +830,7 @@ let add_horn (skolems, init, trans, props)
 
       let extra_eqs, vars =
         List.fold_left (fun (acc, vars) (sym_p, args) ->
-            let p_0, _, vars_0, _ = SM.find sym_p preds_args in
+            let p_0, _, vars_0, _, _ = SM.find sym_p preds_args in
             let acc = Term.mk_eq [Term.mk_var p_0; Term.t_true] :: acc in
             List.fold_left2
               (fun acc v0 t0 -> Term.mk_eq [Term.mk_var v0; t0] :: acc)
@@ -792,13 +838,27 @@ let add_horn (skolems, init, trans, props)
             List.rev_append (p_0 :: vars_0) vars
           ) ([], []) pos
       in
+
+      let pout_cl = preds_out_classes pos p_classes preds_args in
+      
+      let others, vars = SM.fold (fun s (p, _, _, _, _) (acc, ovars) ->
+          Term.mk_eq [Term.mk_var p; Term.t_false] :: acc,
+          p :: ovars
+        ) pout_cl ([], vars) in
+
+      (* eprintf "others...@."; *)
+      (* List.iter (eprintf "others %a@." Term.pp_print_term) others; *)
+      
       let vars = List.rev vars in
+
       
       let term, existential_vars =
         free_vars_to_state_vars
           (Term.mk_and
-             (List.rev_append extra_eqs
-                (List.map Term.negate_simplify literals))) in
+             ((List.rev_append extra_eqs
+                (List.map Term.negate_simplify literals))
+              @ others)
+          ) in
       
       (* let term = unlet_term term in *)
 
@@ -823,7 +883,7 @@ let add_horn (skolems, init, trans, props)
 
       let extra_eqs, vars =
         List.fold_left (fun (acc, vars) (sym_p, args) ->
-            let p_0, _, vars_0, _ = SM.find sym_p preds_args in
+            let p_0, _, vars_0, _, _ = SM.find sym_p preds_args in
             let acc = Term.mk_eq [Term.mk_var p_0; Term.t_true] :: acc in
             List.fold_left2
               (fun acc v0 t0 -> Term.mk_eq [Term.mk_var v0; t0] :: acc)
@@ -834,7 +894,7 @@ let add_horn (skolems, init, trans, props)
 
       let extra_eqs, vars =
         List.fold_left (fun (acc, vars) (sym_p, args) ->
-            let _, p_1, _, vars_1 = SM.find sym_p preds_args in
+            let _, p_1, _, vars_1, _ = SM.find sym_p preds_args in
             let acc = Term.mk_eq [Term.mk_var p_1; Term.t_true] :: acc in
             List.fold_left2
               (fun acc v1 t1 -> Term.mk_eq [Term.mk_var v1; t1] :: acc)
@@ -843,13 +903,24 @@ let add_horn (skolems, init, trans, props)
           ) (extra_eqs, vars) pos
       in
 
-      let vars = List.rev vars in
+      let pout_cl = preds_out_classes pos p_classes preds_args in
+      
+      let others, vars = SM.fold (fun s (_, p, _, _, _) (acc, ovars) ->
+          Term.mk_eq [Term.mk_var p; Term.t_false] :: acc,
+          p :: ovars
+        ) pout_cl ([], vars) in
 
+      (* eprintf "others...@."; *)
+      (* List.iter (eprintf "others %a@." Term.pp_print_term) others; *)
+
+      let vars = List.rev vars in
+      
       let term, existential_vars =
         free_vars_to_state_vars
           (Term.mk_and
              (List.rev_append extra_eqs
-                (List.map Term.negate_simplify literals))) in
+                (List.map Term.negate_simplify literals)
+             @ others)) in
 
       (* let term = unlet_term term in *)
 
@@ -869,76 +940,93 @@ let add_horn (skolems, init, trans, props)
 let rec parse acc preds_args lexbuf = 
 
   (* Parse S-expression *)
-  match  SExprParser.sexp_opt SExprLexer.main lexbuf with 
+  match SExprParser.sexp_opt SExprLexer.main lexbuf with 
 
   | None ->
-    (match acc with
-     (* Construct transition system from gathered information *)
-     | sko_vars, inits, rules, props ->
 
-       let state_vars_set = SM.fold (fun _ (p_0, _, vars_0, _) acc ->
-           List.fold_left (fun acc e ->
-               SVS.add (Var.state_var_of_state_var_instance e) acc
-             ) acc (p_0 :: vars_0)
-         ) preds_args SVS.empty in
+    let ufsyms =
+      SM.fold (fun _ (_,_,_,_, ufp) acc -> ufp :: acc) preds_args [] in
+    (* List.iter (fun a -> eprintf "> %a@." Symbol.pp_print_symbol (UnionFind.data a)) ufsyms; *)
+    let p_classes = classes ufsyms in
 
-       let state_vars = SVS.elements state_vars_set in
-
-       let init_vars, init_disj =
-         List.fold_left (fun (allvars, disj) (term, skos, vars) ->
-             (skos @ vars @ allvars), (term :: disj)
-           ) ([], []) inits in
-
-       let init_t = Term.mk_or init_disj in
-       let init_sig = List.map Var.type_of_var init_vars in
-       (* Symbol for initial state constraint for node *)
-       let init_uf_symbol = UfSymbol.mk_uf_symbol
-           LustreIdent.init_uf_string init_sig Type.t_bool in
-
-       let pred_def_init = 
-         init_uf_symbol,
-         ((* Init flag *)
-           [ TransSys.init_flag_var TransSys.init_base ] @
-           init_vars,
-           (* Add constraint for init flag to be true *)
-           Term.mk_and 
-             [TransSys.init_flag_var TransSys.init_base |> Term.mk_var;
-              init_t]
-         )
-       in
-
-       let trans_vars, trans_disj =
-         List.fold_left (fun (allvars, disj) (term, skos, vars) ->
-             (skos @ vars @ allvars), (term :: disj)
-           ) ([], []) rules in
-
-       let trans_t = Term.mk_or trans_disj in
-       let trans_sig = List.map Var.type_of_var trans_vars in
-       (* Symbol for transial state constraint for node *)
-       let trans_uf_symbol = UfSymbol.mk_uf_symbol
-           LustreIdent.trans_uf_string trans_sig Type.t_bool in
-
-       let pred_def_trans = 
-         (trans_uf_symbol,
-          ((* Init flag. *)
-            [ TransSys.init_flag_var TransSys.trans_base ] @
-            trans_vars,
-            (* Add constraint for init flag to be false *)
-            Term.mk_and
-              [TransSys.init_flag_var TransSys.trans_base
-               |> Term.mk_var |> Term.mk_not;
-               trans_t ]
-          ))
-       in
-
-       let sko_st = List.map Var.state_var_of_state_var_instance sko_vars in
-       
-       TransSys.mk_trans_sys [] (* scope *) (state_vars @ sko_st)
-         pred_def_init pred_def_trans [] (List.rev props) TransSys.Horn
-         
-     | _ -> assert false)
+    (* eprintf "Classes:@."; *)
+    (* List.iter (fun l -> *)
+    (*     eprintf "[ "; *)
+    (*     List.iter (eprintf "%a " Symbol.pp_print_symbol) l; *)
+    (*     eprintf "]@." *)
+    (*   ) p_classes; *)
     
-  | Some s -> match s with 
+    (* Construct Horn clauses *)
+    let sko_vars, inits, rules, props =
+      List.fold_left (fun res (clause', pos, neg) ->
+          add_horn res clause' preds_args pos neg p_classes
+        ) ([],[],[],[]) acc
+    in
+
+     (* Construct transition system from gathered information *)
+
+    let state_vars_set = SM.fold (fun _ (p_0, _, vars_0, _, _) acc ->
+        List.fold_left (fun acc e ->
+            SVS.add (Var.state_var_of_state_var_instance e) acc
+          ) acc (p_0 :: vars_0)
+      ) preds_args SVS.empty in
+
+    let state_vars = SVS.elements state_vars_set in
+
+    let init_vars, init_disj =
+      List.fold_left (fun (allvars, disj) (term, skos, vars) ->
+          (skos @ vars @ allvars), (term :: disj)
+        ) ([], []) inits in
+
+    let init_t = Term.mk_or init_disj in
+    let init_sig = List.map Var.type_of_var init_vars in
+    (* Symbol for initial state constraint for node *)
+    let init_uf_symbol = UfSymbol.mk_uf_symbol
+        LustreIdent.init_uf_string init_sig Type.t_bool in
+
+    let pred_def_init = 
+      init_uf_symbol,
+      ((* Init flag *)
+        [ TransSys.init_flag_var TransSys.init_base ] @
+        init_vars,
+        (* Add constraint for init flag to be true *)
+        Term.mk_and 
+          [TransSys.init_flag_var TransSys.init_base |> Term.mk_var;
+           init_t]
+      )
+    in
+
+    let trans_vars, trans_disj =
+      List.fold_left (fun (allvars, disj) (term, skos, vars) ->
+          (skos @ vars @ allvars), (term :: disj)
+        ) ([], []) rules in
+
+    let trans_t = Term.mk_or trans_disj in
+    let trans_sig = List.map Var.type_of_var trans_vars in
+    (* Symbol for transial state constraint for node *)
+    let trans_uf_symbol = UfSymbol.mk_uf_symbol
+        LustreIdent.trans_uf_string trans_sig Type.t_bool in
+
+    let pred_def_trans = 
+      (trans_uf_symbol,
+       ((* Init flag. *)
+         [ TransSys.init_flag_var TransSys.trans_base ] @
+         trans_vars,
+         (* Add constraint for init flag to be false *)
+         Term.mk_and
+           [TransSys.init_flag_var TransSys.trans_base
+            |> Term.mk_var |> Term.mk_not;
+            trans_t ]
+       ))
+    in
+
+    let sko_st = List.map Var.state_var_of_state_var_instance sko_vars in
+
+    TransSys.mk_trans_sys [] (* scope *) (state_vars @ sko_st)
+      pred_def_init pred_def_trans [] (List.rev props) TransSys.Horn
+    
+  | Some s ->
+    match s with 
 
     (* (set-info ...) *)
     | HStringSExpr.List (HStringSExpr.Atom s :: _) when s == s_set_info -> 
@@ -983,6 +1071,8 @@ let rec parse acc preds_args lexbuf =
         Symbol.mk_symbol (`UF (UfSymbol.mk_uf_symbol p_name arg_types res_type))
       in
 
+      let ufp = UnionFind.make sym_p in
+      
       (* Create a state variable for the value of p *)
       let sv_p = StateVar.mk_state_var p_name ["predicate"] res_type in
       let p_0 = Var.mk_state_var_instance sv_p Numeral.zero in
@@ -1003,7 +1093,7 @@ let rec parse acc preds_args lexbuf =
       let vars_0, vars_1 = List.rev rvars_0, List.rev rvars_1 in
       
       (* Continue *)
-      parse acc (SM.add sym_p (p_0, p_1, vars_0, vars_1) preds_args) lexbuf
+      parse acc (SM.add sym_p (p_0, p_1, vars_0, vars_1, ufp) preds_args) lexbuf
 
     (* Horn clause: (assert ...) *)
     | HStringSExpr.List [HStringSExpr.Atom s; e] when s == s_assert -> 
@@ -1020,8 +1110,18 @@ let rec parse acc preds_args lexbuf =
          of the predicate {p} *)
       let pos, neg, clause' = classify_clause sym_preds clause in
 
-      (* Construct kind2 formulas from this horn clause *)
-      let acc = add_horn acc clause' preds_args pos neg in
+      (* Merge negative apperances of predicates in the same class *)
+      (match neg with
+       | [] | [_] -> ()
+       | (p, _) :: r ->
+         List.iter (fun (p', _) ->
+             let _,_,_,_, ufp = SM.find p preds_args in
+             let _,_,_,_, ufp' = SM.find p' preds_args in
+             UnionFind.union ufp ufp') r
+      );
+
+      (* Remember to construct kind2 formulas from this horn clause *)
+      let acc = (clause', pos, neg) :: acc in
 
       (* Continue *)
       parse acc preds_args lexbuf
@@ -1051,7 +1151,7 @@ let of_channel in_ch =
   (* Initialise buffer for lexing *)
   let lexbuf = Lexing.from_channel in_ch in
 
-  parse ([], [], [], []) SM.empty lexbuf
+  parse [] SM.empty lexbuf
 
 
 

@@ -39,4 +39,5 @@
     (and (> A 5) (p A))
     )))
 
+
 (check-sat)

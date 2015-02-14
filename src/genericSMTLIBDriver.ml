@@ -490,6 +490,7 @@ let smtlib_string_symbol_list =
    ("distinct", Symbol.mk_symbol `DISTINCT);
    ("ite", Symbol.mk_symbol `ITE);
    ("-", Symbol.mk_symbol `MINUS);
+   ("~", Symbol.mk_symbol `MINUS);
    ("+", Symbol.mk_symbol `PLUS);
    ("*", Symbol.mk_symbol `TIMES);
    ("/", Symbol.mk_symbol `DIV);
