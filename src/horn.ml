@@ -60,7 +60,7 @@ open Lib
 (* Change this flag to false to deactivate simplifications. Only change it to
    compare results in case an optimization goes wrong. This reverts to
    introducing Skolem for all quantified variables of the Horn clauses. *)
-let do_simplify_eqs = false 
+let do_simplify_eqs = true
 
 module SVS = StateVar.StateVarSet
 module SVM = StateVar.StateVarMap
@@ -543,11 +543,13 @@ let elim_in_subterm e term =
   remove_trivial_eq t
 
 
-(* Add a dependencies between existential vars found in a subterm. To use with
+(* Add a dependency between existential vars found in a subterm. To use with
    Term.eval_t. *)
 let add_dep existential_vars term acc =
   match term with
-  | Term.T.App (s, _) when s == Symbol.s_eq ->
+  | Term.T.App (s, t1::_) when
+      s == Symbol.s_eq &&
+      not (Type.equal_types (Term.type_of_term t1) Type.t_bool) ->
     let d = List.filter (fun v ->
         Var.VarSet.mem v (Term.vars_of_term (Term.construct term)))
         existential_vars in
@@ -678,6 +680,9 @@ let rec solve_eqs existential_vars term =
             if ot == st then vst
             else VS.diff vst (Term.vars_of_term ot)
           ) vst l in
+        (* eprintf "UNIQUE vars %a --> [ " Term.pp_print_term st; *)
+        (* VS.iter (fun v -> eprintf "%a " Var.pp_print_var v) unique_evars; *)
+        (* eprintf "] @."; *)
         solve_eqs unique_evars st
       ) l in
 

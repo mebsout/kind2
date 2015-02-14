@@ -13,12 +13,13 @@
 
 (assert
  (forall
-  ((A Int) (B Int) (C Int) (D Int))
+  ((A Int) (B Int) (C Int) (D Int) (E Bool) (F Int))
   (=>
    (and
+    (= E (= F 0))      
     (or
      (and (= C 2) (= B C) (= A 3))
-     (and (= C 1) (= B C) (= A 4))
+     (and (= F 1) (= C 1) (= B C) (= A 4))
      )
     (p B))
    (p A))))
@@ -38,6 +39,5 @@
     ((A Int))
     (and (> A 5) (p A))
     )))
-
 
 (check-sat)
