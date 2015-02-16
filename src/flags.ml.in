@@ -572,6 +572,16 @@ let lustre_main_default = None
 
 (* ********** *) 
 
+type horn_simpl = bool
+
+let horn_simpl_of_bool b = b
+
+let bool_of_horn_simpl s = s 
+
+let horn_simpl_default = true
+
+(* ********** *) 
+
 let debug_default = []
 
 (* ********** *) 
@@ -638,6 +648,7 @@ type flags =
       mutable log_level : log_level;
       mutable log_format_xml : bool;
       mutable input_format : [`detect | input_format];
+      mutable horn_simpl : horn_simpl;
       mutable input_file : string option }
     
 (* Defaults for all flags *)
@@ -690,6 +701,7 @@ let flags =
     log_level = log_level_default;
     log_format_xml = log_format_xml_default;
     input_format = input_format_default;
+    horn_simpl = horn_simpl_default;
     input_file = None } 
 
 (* ********** *) 
@@ -1205,6 +1217,17 @@ let input_format_spec =
                   (string_of_input_format input_format_default))
 
 
+(* ********** *) 
+
+let horn_simpl_action o =
+  flags.horn_simpl <- false
+  
+let horn_simpl_spec = 
+  ("--no_horn_simpl", 
+   Arg.Unit horn_simpl_action, 
+   "Deactivate simplifications in Horn clauses and use Skolem \
+    variables instead.")
+
 (* ********************************************************************** *)
 (* Pretty-printing of flags                                               *)
 (* ********************************************************************** *)
@@ -1337,6 +1360,8 @@ let input_format () =
     with Failure _ -> `Lustre
 
 
+let horn_simpl () = flags.horn_simpl
+
 (* ********************************************************************** *)
 (* Parsing of command-line options into flags                             *)
 (* ********************************************************************** *)
@@ -1348,7 +1373,7 @@ let usage_msg =
 
 let rec help_action () = raise (Arg.Help (Arg.usage_string speclist usage_msg))
 
-and speclist = 
+and speclist =
   [
 
     (* Wallclock timeout *)
@@ -1492,6 +1517,9 @@ and speclist =
     (* Set input format *)
     input_format_spec;
 
+    (* Deactivate simplifications in Horn format *)
+    horn_simpl_spec;
+
     (* Display help *)
     ("-help", 
      Arg.Unit help_action, 
@@ -1504,6 +1532,8 @@ and speclist =
      "    Display this list of options")
   ]
     
+
+let al_speclist = Arg.align speclist
 
 let anon_action s = 
   match flags.input_file with 

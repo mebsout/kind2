@@ -57,11 +57,6 @@
 open Format
 open Lib
 
-(* Change this flag to false to deactivate simplifications. Only change it to
-   compare results in case an optimization goes wrong. This reverts to
-   introducing Skolem for all quantified variables of the Horn clauses. *)
-let do_simplify_eqs = true
-
 module SVS = StateVar.StateVarSet
 module SVM = StateVar.StateVarMap
 module VM = Var.VarMap
@@ -807,7 +802,7 @@ let add_horn (skolems, init, trans, props)
       let neg_term = unlet_term neg_term in
 
       let neg_term' =
-        if do_simplify_eqs then solve_eqs existential_vars neg_term
+        if Flags.horn_simpl () then solve_eqs existential_vars neg_term
         else neg_term in
 
       let neg_term', sko_vs = skolemize_remaining existential_vars neg_term' in
@@ -863,7 +858,7 @@ let add_horn (skolems, init, trans, props)
       (* let term = unlet_term term in *)
 
       let term' =
-        if do_simplify_eqs then solve_eqs existential_vars term
+        if Flags.horn_simpl () then solve_eqs existential_vars term
         else term in
 
       let term', sko_vs = skolemize_remaining existential_vars term' in
@@ -925,7 +920,7 @@ let add_horn (skolems, init, trans, props)
       (* let term = unlet_term term in *)
 
       let term' =
-        if do_simplify_eqs then solve_eqs existential_vars term
+        if Flags.horn_simpl () then solve_eqs existential_vars term
         else term in
 
       let term', sko_vs = skolemize_remaining existential_vars term' in

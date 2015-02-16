@@ -225,6 +225,10 @@ val interpreter_steps : unit -> interpreter_steps
 type input_format = [ `Lustre | `Horn | `Native ]
 val input_format : unit -> input_format 
 
+(** Simplify Horn clauses *)
+type horn_simpl = bool
+val horn_simpl : unit -> horn_simpl
+
 (** Input file *)
 val input_file : unit -> string 
 
