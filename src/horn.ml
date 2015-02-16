@@ -92,24 +92,6 @@ let sexpr_conv = GenericSMTLIBDriver.smtlib_string_sexpr_conv
 let type_of_sexpr = sexpr_conv.GenericSMTLIBDriver.type_of_sexpr
 let expr_of_sexpr = GenericSMTLIBDriver.expr_of_string_sexpr
 
-
-module HUFS = Hashtbl.Make (struct
-    type t = Symbol.t UnionFind.t
-    let equal = UnionFind.equal
-    let hash = Hashtbl.hash
-  end)
-  
-let classes l =
-  let h = HUFS.create (List.length l) in
-  List.iter (fun x ->
-      let rx = UnionFind.find x in
-      let clx =
-        try HUFS.find h rx
-        with Not_found -> [] in
-      HUFS.replace h rx (UnionFind.data x :: clx)
-    ) l;
-  HUFS.fold (fun _ cl acc -> cl :: acc) h []
-
 (* Remove let bindings by propagating the values *)
 let unlet_term term = Term.construct (Term.eval_t (fun t _ -> t) term)
 
@@ -736,15 +718,30 @@ let fresh_prop_name =
 
 
 
-let class_of sym_p cl = List.find (List.exists (Symbol.equal_symbols sym_p)) cl
+(* let class_of sym_p cl = List.find (List.exists (Symbol.equal_symbols sym_p)) cl *)
 
-let preds_out_classes pos p_classes preds_args =
+let appear_with sym_p all_negs =
+  List.fold_left (fun acc neg ->
+      let found, others =
+        List.fold_left (fun (found, acci) sp ->
+            found || Symbol.equal_symbols sp sym_p, sp :: acci
+          ) (false, []) neg in
+      if found then List.rev_append others acc else acc
+    ) [] all_negs
+
+                          
+
+let preds_out_classes pos all_negs preds_args =
   (* eprintf "preds_out_classes:"; *)
   (* List.iter (fun (p, _) -> eprintf " %a" Symbol.pp_print_symbol p) pos; *)
   (* eprintf "@."; *)
-  
+
   let r =  List.fold_left (fun out (p, _) ->
-      let cl = class_of p p_classes in
+      let cl = appear_with p all_negs in
+      (* eprintf ">>> %a appears with " Symbol.pp_print_symbol p; *)
+      (* List.iter (fun sp -> eprintf "%a " Symbol.pp_print_symbol sp) cl; *)
+      (* eprintf "@."; *)
+      
       SM.filter (fun sp _ ->
           not (List.exists (Symbol.equal_symbols sp) cl)) out
     ) preds_args pos
@@ -779,7 +776,7 @@ let add_horn (skolems, init, trans, props)
 
       let extra_eqs, ps =
         List.fold_left (fun (acc, ps) (sym_p, args) ->
-            let p_0, _, vars_0, _, _ = SM.find sym_p preds_args in
+            let p_0, _, vars_0, _ = SM.find sym_p preds_args in
             let acc = List.fold_left2 (fun acc v0 t0 ->
                 Term.mk_eq [Term.mk_var v0; t0] :: acc)
                 acc vars_0 args in
@@ -825,7 +822,7 @@ let add_horn (skolems, init, trans, props)
 
       let extra_eqs, vars =
         List.fold_left (fun (acc, vars) (sym_p, args) ->
-            let p_0, _, vars_0, _, _ = SM.find sym_p preds_args in
+            let p_0, _, vars_0, _ = SM.find sym_p preds_args in
             let acc = Term.mk_eq [Term.mk_var p_0; Term.t_true] :: acc in
             List.fold_left2
               (fun acc v0 t0 -> Term.mk_eq [Term.mk_var v0; t0] :: acc)
@@ -836,7 +833,7 @@ let add_horn (skolems, init, trans, props)
 
       let pout_cl = preds_out_classes pos p_classes preds_args in
       
-      let others, vars = SM.fold (fun s (p, _, _, _, _) (acc, ovars) ->
+      let others, vars = SM.fold (fun s (p, _, _, _) (acc, ovars) ->
           Term.mk_eq [Term.mk_var p; Term.t_false] :: acc,
           p :: ovars
         ) pout_cl ([], vars) in
@@ -878,7 +875,7 @@ let add_horn (skolems, init, trans, props)
 
       let extra_eqs, vars =
         List.fold_left (fun (acc, vars) (sym_p, args) ->
-            let p_0, _, vars_0, _, _ = SM.find sym_p preds_args in
+            let p_0, _, vars_0, _ = SM.find sym_p preds_args in
             let acc = Term.mk_eq [Term.mk_var p_0; Term.t_true] :: acc in
             List.fold_left2
               (fun acc v0 t0 -> Term.mk_eq [Term.mk_var v0; t0] :: acc)
@@ -889,7 +886,7 @@ let add_horn (skolems, init, trans, props)
 
       let extra_eqs, vars =
         List.fold_left (fun (acc, vars) (sym_p, args) ->
-            let _, p_1, _, vars_1, _ = SM.find sym_p preds_args in
+            let _, p_1, _, vars_1 = SM.find sym_p preds_args in
             let acc = Term.mk_eq [Term.mk_var p_1; Term.t_true] :: acc in
             List.fold_left2
               (fun acc v1 t1 -> Term.mk_eq [Term.mk_var v1; t1] :: acc)
@@ -900,7 +897,7 @@ let add_horn (skolems, init, trans, props)
 
       let pout_cl = preds_out_classes pos p_classes preds_args in
       
-      let others, vars = SM.fold (fun s (_, p, _, _, _) (acc, ovars) ->
+      let others, vars = SM.fold (fun s (_, p, _, _) (acc, ovars) ->
           Term.mk_eq [Term.mk_var p; Term.t_false] :: acc,
           p :: ovars
         ) pout_cl ([], vars) in
@@ -930,6 +927,13 @@ let add_horn (skolems, init, trans, props)
       sko_vs @ skolems, init, (term', sko_vs, vars) :: trans, props
 
 
+let pp_print_classes fmt cl =
+  List.iter (fun l ->
+      fprintf fmt "[ ";
+      List.iter (fprintf fmt "%a " Symbol.pp_print_symbol) l;
+      fprintf fmt "]\n"
+    ) cl
+
 
 (* Parse a Horn clauses problem expressed as a monolithic system. *)
 let rec parse acc preds_args lexbuf = 
@@ -939,18 +943,11 @@ let rec parse acc preds_args lexbuf =
 
   | None ->
 
-    let ufsyms =
-      SM.fold (fun _ (_,_,_,_, ufp) acc -> ufp :: acc) preds_args [] in
-    (* List.iter (fun a -> eprintf "> %a@." Symbol.pp_print_symbol (UnionFind.data a)) ufsyms; *)
-    let p_classes = classes ufsyms in
+    (* let p_classes = classes ufsyms in *)
+    let p_classes = List.map (fun (_, _, neg) -> List.map fst neg) acc in
+      
+    (debug horn "Classes:\n%a@." pp_print_classes p_classes in ());
 
-    (* eprintf "Classes:@."; *)
-    (* List.iter (fun l -> *)
-    (*     eprintf "[ "; *)
-    (*     List.iter (eprintf "%a " Symbol.pp_print_symbol) l; *)
-    (*     eprintf "]@." *)
-    (*   ) p_classes; *)
-    
     (* Construct Horn clauses *)
     let sko_vars, inits, rules, props =
       List.fold_left (fun res (clause', pos, neg) ->
@@ -960,7 +957,7 @@ let rec parse acc preds_args lexbuf =
 
      (* Construct transition system from gathered information *)
 
-    let state_vars_set = SM.fold (fun _ (p_0, _, vars_0, _, _) acc ->
+    let state_vars_set = SM.fold (fun _ (p_0, _, vars_0, _) acc ->
         List.fold_left (fun acc e ->
             SVS.add (Var.state_var_of_state_var_instance e) acc
           ) acc (p_0 :: vars_0)
@@ -1065,8 +1062,6 @@ let rec parse acc preds_args lexbuf =
       let sym_p = 
         Symbol.mk_symbol (`UF (UfSymbol.mk_uf_symbol p_name arg_types res_type))
       in
-
-      let ufp = UnionFind.make sym_p in
       
       (* Create a state variable for the value of p *)
       let sv_p = StateVar.mk_state_var p_name ["predicate"] res_type in
@@ -1088,7 +1083,7 @@ let rec parse acc preds_args lexbuf =
       let vars_0, vars_1 = List.rev rvars_0, List.rev rvars_1 in
       
       (* Continue *)
-      parse acc (SM.add sym_p (p_0, p_1, vars_0, vars_1, ufp) preds_args) lexbuf
+      parse acc (SM.add sym_p (p_0, p_1, vars_0, vars_1) preds_args) lexbuf
 
     (* Horn clause: (assert ...) *)
     | HStringSExpr.List [HStringSExpr.Atom s; e] when s == s_assert -> 
@@ -1104,16 +1099,6 @@ let rec parse acc preds_args lexbuf =
       (* Indentify state variables and classify clauses based on the polarity
          of the predicate {p} *)
       let pos, neg, clause' = classify_clause sym_preds clause in
-
-      (* Merge negative apperances of predicates in the same class *)
-      (match neg with
-       | [] | [_] -> ()
-       | (p, _) :: r ->
-         List.iter (fun (p', _) ->
-             let _,_,_,_, ufp = SM.find p preds_args in
-             let _,_,_,_, ufp' = SM.find p' preds_args in
-             UnionFind.union ufp ufp') r
-      );
 
       (* Remember to construct kind2 formulas from this horn clause *)
       let acc = (clause', pos, neg) :: acc in
