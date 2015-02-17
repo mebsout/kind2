@@ -72,7 +72,9 @@ let s_horn = HString.mk_hstring "HORN"
 let s_declare_fun = HString.mk_hstring "declare-fun"
 let s_assert = HString.mk_hstring "assert"
 let s_check_sat = HString.mk_hstring "check-sat"
-
+let s_bang = HString.mk_hstring "!"
+let s_named = HString.mk_hstring ":named"
+    
 (* Useful term constants *)
 
 let t_int_zero = Term.mk_num_of_int 0
@@ -752,6 +754,41 @@ let preds_out_classes pos all_negs preds_args =
   (* eprintf "@."; *)
   r
 
+
+(* let preserve_others pos preds_args = *)
+(*   let pres, vars = *)
+(*     SM.fold (fun s (p0, p1, vars0, vars1) (others, vars) -> *)
+(*         if List.exists (fun (sp, _) -> Symbol.equal_symbols s sp) pos then *)
+(*           others, vars *)
+(*         else  *)
+(*           let eqs, vars = *)
+(*             List.fold_left2 (fun (others, vars) x0 x1 -> *)
+(*               Term.mk_eq [Term.mk_var x1; Term.mk_var x0] :: others, *)
+(*               x0 :: x1 :: vars *)
+(*               ) ([], vars) (vars0) (vars1) in *)
+(*           Term.mk_and [Term.mk_eq [Term.mk_var p1; Term.mk_var p0]; *)
+(*                        Term.mk_implies [Term.mk_var p0; Term.mk_and eqs]] *)
+(*           :: others, *)
+(*           p0 :: p1 :: vars *)
+(*       ) preds_args ([], []) in *)
+(*   Term.mk_and pres, vars *)
+
+
+let preserve_others pos preds_args =
+  let pres, vars =
+    SM.fold (fun s (p0, p1, vars0, vars1) (others, vars) ->
+        if List.exists (fun (sp, _) -> Symbol.equal_symbols s sp) pos then
+          others, vars
+        else
+          (* let vars0, vars1 = [],[] in *)
+          List.fold_left2 (fun (others, vars) x0 x1 ->
+              Term.mk_eq [Term.mk_var x1; Term.mk_var x0] :: others,
+              x0 :: x1 :: vars
+            ) (others, vars) (p0 :: vars0) (p1 :: vars1)
+      ) preds_args ([], []) in
+  Term.mk_and pres, vars
+
+
 (* Add a Horn clause to the transition system. The first argument is used to
    accumulate inrtoduced Skolem variables, inital conditions, transition
    relations that were found and properties. *)
@@ -780,7 +817,7 @@ let add_horn (skolems, init, trans, props)
             let acc = List.fold_left2 (fun acc v0 t0 ->
                 Term.mk_eq [Term.mk_var v0; t0] :: acc)
                 acc vars_0 args in
-            let ps = Term.mk_eq [Term.mk_var p_0; Term.t_true] :: ps in
+            let ps = Term.mk_var p_0 :: ps in
             acc, ps
           ) ([], []) neg
       in
@@ -823,7 +860,7 @@ let add_horn (skolems, init, trans, props)
       let extra_eqs, vars =
         List.fold_left (fun (acc, vars) (sym_p, args) ->
             let p_0, _, vars_0, _ = SM.find sym_p preds_args in
-            let acc = Term.mk_eq [Term.mk_var p_0; Term.t_true] :: acc in
+            let acc = Term.mk_var p_0 :: acc in
             List.fold_left2
               (fun acc v0 t0 -> Term.mk_eq [Term.mk_var v0; t0] :: acc)
               acc vars_0 args,
@@ -832,9 +869,9 @@ let add_horn (skolems, init, trans, props)
       in
 
       let pout_cl = preds_out_classes pos p_classes preds_args in
-      
+
       let others, vars = SM.fold (fun s (p, _, _, _) (acc, ovars) ->
-          Term.mk_eq [Term.mk_var p; Term.t_false] :: acc,
+          Term.mk_not (Term.mk_var p) :: acc,
           p :: ovars
         ) pout_cl ([], vars) in
 
@@ -847,10 +884,8 @@ let add_horn (skolems, init, trans, props)
       let term, existential_vars =
         free_vars_to_state_vars
           (Term.mk_and
-             ((List.rev_append extra_eqs
-                (List.map Term.negate_simplify literals))
-              @ others)
-          ) in
+             (List.rev_append extra_eqs
+                (List.map Term.negate_simplify literals))) in
       
       (* let term = unlet_term term in *)
 
@@ -860,9 +895,11 @@ let add_horn (skolems, init, trans, props)
 
       let term', sko_vs = skolemize_remaining existential_vars term' in
 
+      let term' = Term.mk_and (term' :: others) in
+
       (debug horn "INIT : %a@." Term.pp_print_term term' in ());
 
-      sko_vs @ skolems, (term', sko_vs, vars) :: init, trans, props
+      sko_vs @ skolems, (term', sko_vs, vars(* , pout_cl *)) :: init, trans, props
 
 
     (* Predicate occurs positive and negative: transition relation
@@ -876,7 +913,7 @@ let add_horn (skolems, init, trans, props)
       let extra_eqs, vars =
         List.fold_left (fun (acc, vars) (sym_p, args) ->
             let p_0, _, vars_0, _ = SM.find sym_p preds_args in
-            let acc = Term.mk_eq [Term.mk_var p_0; Term.t_true] :: acc in
+            let acc = Term.mk_var p_0 :: acc in
             List.fold_left2
               (fun acc v0 t0 -> Term.mk_eq [Term.mk_var v0; t0] :: acc)
               acc vars_0 args,
@@ -887,7 +924,7 @@ let add_horn (skolems, init, trans, props)
       let extra_eqs, vars =
         List.fold_left (fun (acc, vars) (sym_p, args) ->
             let _, p_1, _, vars_1 = SM.find sym_p preds_args in
-            let acc = Term.mk_eq [Term.mk_var p_1; Term.t_true] :: acc in
+            let acc = Term.mk_var p_1 :: acc in
             List.fold_left2
               (fun acc v1 t1 -> Term.mk_eq [Term.mk_var v1; t1] :: acc)
               acc vars_1 args,
@@ -896,23 +933,44 @@ let add_horn (skolems, init, trans, props)
       in
 
       let pout_cl = preds_out_classes pos p_classes preds_args in
-      
-      let others, vars = SM.fold (fun s (_, p, _, _) (acc, ovars) ->
-          Term.mk_eq [Term.mk_var p; Term.t_false] :: acc,
+
+      (* let pin_cl = *)
+      (*   SM.filter (fun sp _ -> *)
+      (*       not (List.exists (fun (s, _) -> Symbol.equal_symbols sp s) neg)) *)
+      (*     preds_args in *)
+
+      (* let pout_cl = *)
+      (*   SM.filter (fun sp _ -> *)
+      (*       not (List.exists (fun (s, _) -> Symbol.equal_symbols sp s) pos)) *)
+      (*     preds_args in *)
+            
+      (* let others, vars = SM.fold (fun s (p0, p1, _, _) (acc, ovars) -> *)
+      (*     Term.mk_eq [Term.mk_var p1; Term.mk_var p0] :: acc, *)
+      (*     p0 :: p1 :: ovars *)
+      (*   ) pout_cl ([], vars) in *)
+
+      let others, vars = SM.fold (fun s (_, p, _ , _) (acc, ovars) ->
+          Term.mk_not (Term.mk_var p) :: acc,
           p :: ovars
         ) pout_cl ([], vars) in
-
+      
       (* eprintf "others...@."; *)
       (* List.iter (eprintf "others %a@." Term.pp_print_term) others; *)
 
-      let vars = List.rev vars in
+      let wime = SM.filter (fun s1 _ ->
+          not (SM.exists (fun s2 _ ->
+              Symbol.equal_symbols s1 s2) pout_cl)
+        ) preds_args in
+      
+      let pres, ovars = preserve_others pos wime in
+      
+      let vars = List.rev (ovars @ vars) in
       
       let term, existential_vars =
         free_vars_to_state_vars
           (Term.mk_and
              (List.rev_append extra_eqs
-                (List.map Term.negate_simplify literals)
-             @ others)) in
+                (List.map Term.negate_simplify literals))) in
 
       (* let term = unlet_term term in *)
 
@@ -922,6 +980,8 @@ let add_horn (skolems, init, trans, props)
 
       let term', sko_vs = skolemize_remaining existential_vars term' in
 
+      let term' = Term.mk_and (term' :: pres :: others) in
+      
       (debug horn "TRANS : %a@." Term.pp_print_term term' in ());
       
       sko_vs @ skolems, init, (term', sko_vs, vars) :: trans, props
@@ -935,6 +995,11 @@ let pp_print_classes fmt cl =
     ) cl
 
 
+let remove_name = function
+  | HStringSExpr.List [HStringSExpr.Atom s1; e; HStringSExpr.Atom s2; _]
+    when s1 == s_bang && s2 == s_named -> e
+  | e -> e
+    
 (* Parse a Horn clauses problem expressed as a monolithic system. *)
 let rec parse acc preds_args lexbuf = 
 
@@ -943,6 +1008,8 @@ let rec parse acc preds_args lexbuf =
 
   | None ->
 
+    let acc = List.rev acc in
+    
     (* let p_classes = classes ufsyms in *)
     let p_classes = List.map (fun (_, _, neg) -> List.map fst neg) acc in
       
@@ -965,12 +1032,22 @@ let rec parse acc preds_args lexbuf =
 
     let state_vars = SVS.elements state_vars_set in
 
-    let init_vars, init_disj =
-      List.fold_left (fun (allvars, disj) (term, skos, vars) ->
-          (skos @ vars @ allvars), (term :: disj)
-        ) ([], []) inits in
+    let init_vars, init_conj(* , pout *) =
+      List.fold_left (fun (allvars, conj(* , pout *)) (term, skos, vars(* , pout_cl *)) ->
+          (* let pout = SM.filter (fun s1 _ -> *)
+          (*     SM.exists (fun s2 _ -> Symbol.equal_symbols s1 s2) pout_cl *)
+          (*   ) pout in *)
+          (skos @ vars @ allvars), (term :: conj)(* , pout *)
 
-    let init_t = Term.mk_or init_disj in
+        ) ([], [](* , preds_args *)) inits in
+
+    (* let others, init_vars = SM.fold (fun s (p, _, _, _) (acc, ovars) -> *)
+    (*     Term.mk_eq [Term.mk_var p; Term.t_false] :: acc, *)
+    (*     p :: ovars *)
+    (*   ) pout ([], init_vars) in *)
+
+    
+    let init_t = Term.mk_or (init_conj (* @ others *)) in
     let init_sig = List.map Var.type_of_var init_vars in
     (* Symbol for initial state constraint for node *)
     let init_uf_symbol = UfSymbol.mk_uf_symbol
@@ -1088,6 +1165,8 @@ let rec parse acc preds_args lexbuf =
     (* Horn clause: (assert ...) *)
     | HStringSExpr.List [HStringSExpr.Atom s; e] when s == s_assert -> 
 
+      let e = remove_name e in
+      
       if SM.is_empty preds_args then raise (Failure "No predicates declared");
       let expr = expr_of_sexpr e in
 
