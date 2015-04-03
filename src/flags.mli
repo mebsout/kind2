@@ -229,6 +229,10 @@ val input_format : unit -> input_format
 type horn_simpl = bool
 val horn_simpl : unit -> horn_simpl
 
+(** Allow more liberal horn clauses *)
+type horn_relaxed = bool
+val horn_relaxed : unit -> horn_relaxed
+
 (** Input file *)
 val input_file : unit -> string 
 

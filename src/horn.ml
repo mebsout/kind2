@@ -254,7 +254,9 @@ let rec polarity_of_pred sym_p polarity expr = match Term.destruct expr with
   | _ -> None
 
 
-let sym_already_in s l = l <> [] (* List.exists (fun (s', _) -> s == s') l *)
+let bad_horn_shape s l =
+  not (Flags.horn_relaxed ()) && l <> [] 
+  (* List.exists (fun (s', _) -> s == s') l *)
 
 (* Classify a clause, returns lists of positive and negative apperances as well
    as the expression extracted from the horn clause. *)
@@ -269,7 +271,7 @@ let classify_clause preds literals =
            match polarity_of_pred sym_p true expr with 
            | Some (true, args) ->
 
-             if sym_already_in sym_p pos then
+             if bad_horn_shape sym_p pos then
                raise 
                  (Invalid_argument
                     (Format.asprintf
@@ -280,7 +282,7 @@ let classify_clause preds literals =
 
            | Some (false, args) -> 
 
-             if sym_already_in sym_p neg then
+             if bad_horn_shape sym_p neg then
                raise 
                  (Invalid_argument
                     (Format.asprintf
@@ -1287,6 +1289,10 @@ let of_channel in_ch =
    system. *)
 let of_file filename = 
 
+  if Flags.horn_relaxed () then
+    Format.eprintf "[Warning] Checks for shapes of Horn clauses were \
+                    deactivated. Results may be incorrect.@.";
+  
   (* Open the given file for reading *)
   let use_file = open_in filename in
   let in_ch = use_file in

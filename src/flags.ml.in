@@ -582,6 +582,16 @@ let horn_simpl_default = true
 
 (* ********** *) 
 
+type horn_relaxed = bool
+
+let horn_relaxed_of_bool b = b
+
+let bool_of_horn_relaxed s = s 
+
+let horn_relaxed_default = false
+
+(* ********** *) 
+
 let debug_default = []
 
 (* ********** *) 
@@ -649,6 +659,7 @@ type flags =
       mutable log_format_xml : bool;
       mutable input_format : [`detect | input_format];
       mutable horn_simpl : horn_simpl;
+      mutable horn_relaxed : horn_relaxed;
       mutable input_file : string option }
     
 (* Defaults for all flags *)
@@ -702,6 +713,7 @@ let flags =
     log_format_xml = log_format_xml_default;
     input_format = input_format_default;
     horn_simpl = horn_simpl_default;
+    horn_relaxed = horn_relaxed_default;
     input_file = None } 
 
 (* ********** *) 
@@ -1228,6 +1240,16 @@ let horn_simpl_spec =
    "Deactivate simplifications in Horn clauses and use Skolem \
     variables instead.")
 
+(* ********** *) 
+
+let horn_relaxed_action o =
+  flags.horn_relaxed <- true
+  
+let horn_relaxed_spec = 
+  ("--horn_relaxed", 
+   Arg.Unit horn_relaxed_action, 
+   "Deactivate linear checks for Horn clauses (not recommended).")
+
 (* ********************************************************************** *)
 (* Pretty-printing of flags                                               *)
 (* ********************************************************************** *)
@@ -1361,6 +1383,8 @@ let input_format () =
 
 
 let horn_simpl () = flags.horn_simpl
+
+let horn_relaxed () = flags.horn_relaxed
 
 (* ********************************************************************** *)
 (* Parsing of command-line options into flags                             *)
@@ -1520,6 +1544,9 @@ and speclist =
     (* Deactivate simplifications in Horn format *)
     horn_simpl_spec;
 
+    (* Deactivate relaxedifications in Horn format *)
+    horn_relaxed_spec;
+    
     (* Display help *)
     ("-help", 
      Arg.Unit help_action, 
