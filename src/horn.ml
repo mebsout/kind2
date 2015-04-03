@@ -74,7 +74,12 @@ let s_assert = HString.mk_hstring "assert"
 let s_check_sat = HString.mk_hstring "check-sat"
 let s_bang = HString.mk_hstring "!"
 let s_named = HString.mk_hstring ":named"
-    
+let s_declare_rel = HString.mk_hstring "declare-rel"
+let s_declare_var = HString.mk_hstring "declare-var"
+let s_rule = HString.mk_hstring "rule"
+let s_query = HString.mk_hstring "query"
+
+
 (* Useful term constants *)
 
 let t_int_zero = Term.mk_num_of_int 0
@@ -93,6 +98,8 @@ module Conv = SMTExpr.Converter (GenericSMTLIBDriver)
 let sexpr_conv = GenericSMTLIBDriver.smtlib_string_sexpr_conv
 let type_of_sexpr = sexpr_conv.GenericSMTLIBDriver.type_of_sexpr
 let expr_of_sexpr = GenericSMTLIBDriver.expr_of_string_sexpr
+let expr_of_sexpr_bvars =
+  sexpr_conv.GenericSMTLIBDriver.expr_of_string_sexpr sexpr_conv
 
 (* Remove let bindings by propagating the values *)
 let unlet_term term = Term.construct (Term.eval_t (fun t _ -> t) term)
@@ -247,7 +254,7 @@ let rec polarity_of_pred sym_p polarity expr = match Term.destruct expr with
   | _ -> None
 
 
-let sym_already_in s l = List.exists (fun (s', _) -> s == s') l
+let sym_already_in s l = l <> [] (* List.exists (fun (s', _) -> s == s') l *)
 
 (* Classify a clause, returns lists of positive and negative apperances as well
    as the expression extracted from the horn clause. *)
@@ -1001,7 +1008,7 @@ let remove_name = function
   | e -> e
     
 (* Parse a Horn clauses problem expressed as a monolithic system. *)
-let rec parse acc preds_args lexbuf = 
+let rec parse acc vars preds_args lexbuf = 
 
   (* Parse S-expression *)
   match SExprParser.sexp_opt SExprLexer.main lexbuf with 
@@ -1101,14 +1108,14 @@ let rec parse acc preds_args lexbuf =
     | HStringSExpr.List (HStringSExpr.Atom s :: _) when s == s_set_info -> 
 
       (* Skip *)
-      parse acc preds_args lexbuf
+      parse acc vars preds_args lexbuf
 
     (* (set-logic HORN) *)
     | HStringSExpr.List [HStringSExpr.Atom s; HStringSExpr.Atom l]
       when s == s_set_logic && l == s_horn -> 
 
       (* Skip *)
-      parse acc preds_args lexbuf
+      parse acc vars preds_args lexbuf
 
     (* (set-logic ...) *)
     | HStringSExpr.List [HStringSExpr.Atom s; e] when s == s_set_logic -> 
@@ -1129,38 +1136,37 @@ let rec parse acc preds_args lexbuf =
 
       (* Types of argument of monolithic predicate *)
       let arg_types = List.map type_of_sexpr a in
-
       (* Types of result of monolithic predicate *)
       let res_type = type_of_sexpr r in
-
       let p_name = HString.string_of_hstring p in
-      
-      (* Declare predicate *)
-      let sym_p = 
-        Symbol.mk_symbol (`UF (UfSymbol.mk_uf_symbol p_name arg_types res_type))
-      in
-      
-      (* Create a state variable for the value of p *)
-      let sv_p = StateVar.mk_state_var p_name ["predicate"] res_type in
-      let p_0 = Var.mk_state_var_instance sv_p Numeral.zero in
-      let p_1 = Var.mk_state_var_instance sv_p Numeral.one in
 
-      (* Create a state variables for the arguments of p *)
-      let _, rvars_0, rvars_1 =
-        List.fold_left 
-          (fun (i, vars_0, vars_1) t -> 
-
-             let sv = StateVar.mk_state_var (string_of_int i) [p_name] t in
-             (succ i, 
-              (Var.mk_state_var_instance sv Numeral.zero) :: vars_0, 
-              (Var.mk_state_var_instance sv Numeral.one) :: vars_1))
-          (1, [], [])
-          arg_types
-      in
-      let vars_0, vars_1 = List.rev rvars_0, List.rev rvars_1 in
+      parse_pred_decl acc vars preds_args lexbuf p_name arg_types res_type
       
-      (* Continue *)
-      parse acc (SM.add sym_p (p_0, p_1, vars_0, vars_1) preds_args) lexbuf
+    (* Predicate declaration (declare-rel p a) *)
+    | HStringSExpr.List 
+        [HStringSExpr.Atom s; 
+         HStringSExpr.Atom p; 
+         HStringSExpr.List a]
+      when s == s_declare_rel  -> 
+
+      (* Types of argument of monolithic predicate *)
+      let arg_types = List.map type_of_sexpr a in
+      (* Types of result of monolithic predicate *)
+      let res_type = Type.t_bool in
+      let p_name = HString.string_of_hstring p in
+
+      parse_pred_decl acc vars preds_args lexbuf p_name arg_types res_type
+      
+    (* Variable declaration (declare-var p a) *)
+    | HStringSExpr.List 
+        [HStringSExpr.Atom s; 
+         HStringSExpr.Atom v; 
+         (HStringSExpr.Atom _ as ty)]
+      when s == s_declare_var  -> 
+
+      let var = Var.mk_free_var v (type_of_sexpr ty) in
+
+      parse acc (var :: vars) preds_args lexbuf      
 
     (* Horn clause: (assert ...) *)
     | HStringSExpr.List [HStringSExpr.Atom s; e] when s == s_assert -> 
@@ -1169,9 +1175,86 @@ let rec parse acc preds_args lexbuf =
       
       if SM.is_empty preds_args then raise (Failure "No predicates declared");
       let expr = expr_of_sexpr e in
+      parse_clause  acc vars preds_args lexbuf expr
 
+
+    (* Horn clause: (rule ...) *)
+    | HStringSExpr.List [HStringSExpr.Atom s; e] when s == s_rule -> 
+
+      let e = remove_name e in
+      
+      if SM.is_empty preds_args then raise (Failure "No predicates declared");
+      let bvars = List.map (fun v -> Var.hstring_of_free_var v, v) vars in
+      let expr = expr_of_sexpr_bvars bvars e in
+
+      let q_expr = Term.mk_forall vars expr in
+      
+      parse_clause  acc vars preds_args lexbuf q_expr
+
+
+    (* Horn clause: (query ...) *)
+    | HStringSExpr.List [HStringSExpr.Atom s; e] when s == s_query -> 
+
+      let e = remove_name e in
+      
+      if SM.is_empty preds_args then raise (Failure "No predicates declared");
+      let bvars = List.map (fun v -> Var.hstring_of_free_var v, v) vars in
+      let expr = expr_of_sexpr_bvars bvars e in
+
+      let q_expr = Term.mk_forall vars (Term.negate_simplify expr) in
+      
+      parse_clause  acc vars preds_args lexbuf q_expr
+
+        
+    (* (check-sat) *)
+    | HStringSExpr.List [HStringSExpr.Atom s] when s == s_check_sat -> 
+
+      (* Skip *)
+      parse acc vars preds_args lexbuf
+
+    | e -> 
+
+      raise 
+        (Failure 
+           (Format.asprintf 
+              "@[<hv>Unexpected S-expression@ @[<hv 1>%a@]@]" 
+              HStringSExpr.pp_print_sexpr e))
+
+
+and parse_pred_decl acc vars preds_args lexbuf p_name arg_types res_type =
+
+    (* Declare predicate *)
+    let sym_p = 
+      Symbol.mk_symbol (`UF (UfSymbol.mk_uf_symbol p_name arg_types res_type))
+    in
+
+    (* Create a state variable for the value of p *)
+    let sv_p = StateVar.mk_state_var p_name ["predicate"] res_type in
+    let p_0 = Var.mk_state_var_instance sv_p Numeral.zero in
+    let p_1 = Var.mk_state_var_instance sv_p Numeral.one in
+
+    (* Create a state variables for the arguments of p *)
+    let _, rvars_0, rvars_1 =
+      List.fold_left 
+        (fun (i, vars_0, vars_1) t -> 
+
+           let sv = StateVar.mk_state_var (string_of_int i) [p_name] t in
+           (succ i, 
+            (Var.mk_state_var_instance sv Numeral.zero) :: vars_0, 
+            (Var.mk_state_var_instance sv Numeral.one) :: vars_1))
+        (1, [], [])
+        arg_types
+    in
+    let vars_0, vars_1 = List.rev rvars_0, List.rev rvars_1 in
+
+    (* Continue *)
+    parse acc vars (SM.add sym_p (p_0, p_1, vars_0, vars_1) preds_args) lexbuf
+
+
+and parse_clause acc vars preds_args lexbuf quant_expr =
+    
       (* Clausify at top level *)
-      let clause = clause_of_expr expr in
+      let clause = clause_of_expr quant_expr in
 
       let sym_preds = List.map fst (SM.bindings preds_args) in
 
@@ -1183,22 +1266,7 @@ let rec parse acc preds_args lexbuf =
       let acc = (clause', pos, neg) :: acc in
 
       (* Continue *)
-      parse acc preds_args lexbuf
-
-
-    (* (check-sat) *)
-    | HStringSExpr.List [HStringSExpr.Atom s] when s == s_check_sat -> 
-
-      (* Skip *)
-      parse acc preds_args lexbuf
-
-    | e -> 
-
-      raise 
-        (Failure 
-           (Format.asprintf 
-              "@[<hv>Unexpected S-expression@ @[<hv 1>%a@]@]" 
-              HStringSExpr.pp_print_sexpr e))
+      parse acc vars preds_args lexbuf
 
 
 
@@ -1210,7 +1278,7 @@ let of_channel in_ch =
   (* Initialise buffer for lexing *)
   let lexbuf = Lexing.from_channel in_ch in
 
-  parse [] SM.empty lexbuf
+  parse [] [] SM.empty lexbuf
 
 
 
