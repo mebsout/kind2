@@ -120,7 +120,7 @@ rule main buf = parse
       scan_quoted buf (lexeme_start_p lexbuf) lexbuf;
       let str = Buffer.contents buf in
       Buffer.clear buf;
-      STRING (HString.mk_hstring str)
+      STRING (HString.mk_hstring ("|"^ str ^"|"))
     }
 
   | unquoted_start unquoted* ("#|" | "|#") unquoted*
@@ -181,9 +181,7 @@ and scan_string buf start = parse
       }
   | ([^ '\\' '"'] # lf)+
       {
-        let ofs = lexeme_start lexbuf in
-        let len = lexeme_end lexbuf - ofs in
-        Buffer.add_substring buf lexbuf.lex_buffer ofs len;
+        Buffer.add_string buf (lexeme lexbuf);
         scan_string buf start lexbuf
       }
   | eof
@@ -248,9 +246,7 @@ and scan_quoted buf start = parse
       }
   | ([^ '\\' '|'] # lf)+
       {
-        let ofs = lexeme_start lexbuf in
-        let len = lexeme_end lexbuf - ofs in
-        Buffer.add_substring buf lexbuf.lex_buffer ofs len;
+        Buffer.add_string buf (lexeme lexbuf);
         scan_quoted buf start lexbuf
       }
   | eof
