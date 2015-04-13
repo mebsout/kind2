@@ -230,6 +230,9 @@ val s_lt : t
 (** Constant modulus operator symbol *)
 val s_mod : t
 
+(** Constant plus operator symbol *)
+val s_plus : t
+
 (** Constant minus operator symbol *)
 val s_minus : t
 
