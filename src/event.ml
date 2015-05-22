@@ -448,21 +448,17 @@ let pp_print_counterexample_pt level trans_sys prop_name ppf = function
         (* Native input *)
         | TransSys.Native ->
 
-          assert false
+          (* Output counterexample *)
+          Format.fprintf ppf 
+            "Counterexample:@,%a" NativeInput.pp_print_path_pt cex
 
-        (* Native input *)
+        (* Horn clauses input *)
         | TransSys.Horn ->
 
           (* Output counterexample *)
           Format.fprintf ppf "Counterexample:@,%a@."
             Horn.pp_print_path_pt cex
-          
-      (*
-          (* Output counterexample *)
-          Format.fprintf ppf 
-            "Counterexample:@,%a"
-            NativeInput.pp_print_path_pt cex
-*)
+
 
     )
 
