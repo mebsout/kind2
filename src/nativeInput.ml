@@ -257,9 +257,14 @@ let rec optional_fields_of_sexprs (callers, props) = function
 
 
 
+let add_name_if_absent = function
+  | HS.List (HS.Atom c :: HS.List v :: r) when c == s_define_node -> 
+    HS.List (HS.Atom c :: HS.Atom (HString.mk_hstring "") :: HS.List v :: r)
+  | d -> d
+
 
 (* Convert a predicate definition *)
-let node_def_of_sexpr = function
+let node_def_of_sexpr sexp = match add_name_if_absent sexp with
 
   (* (define-node NAME (VARS) (init INIT) (trans TRANS) (callers CALLERS))?
      (props PROPS)? *)
@@ -327,7 +332,10 @@ let node_def_of_sexpr = function
       callers,
       props
     )
-
+  | HS.List 
+    (HS.Atom c :: _) ->
+  Format.eprintf "failed on %a@." HString.pp_print_hstring c;
+  assert false
   | HS.Atom _ 
   | HS.List _ -> failwith "Invalid format of node definition"
 

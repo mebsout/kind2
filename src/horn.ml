@@ -1100,7 +1100,8 @@ let rec parse acc vars preds_args lexbuf =
 
     let sko_st = List.map Var.state_var_of_state_var_instance sko_vars in
 
-    TransSys.mk_trans_sys [] (* scope *) (state_vars @ sko_st)
+    TransSys.mk_trans_sys [] (* scope *)
+      (TransSys.init_flag_svar :: state_vars @ sko_st)
       pred_def_init pred_def_trans [] (List.rev props) TransSys.Horn
     
   | Some s ->
