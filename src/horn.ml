@@ -105,6 +105,18 @@ let expr_of_sexpr_bvars =
 let unlet_term term = Term.construct (Term.eval_t (fun t _ -> t) term)
 
 
+
+(* Memoized version of Term.vars_of_term *)
+let memo_vars_of_term =
+  let h = Term.TermHashtbl.create 2001 in
+  fun t ->
+    try Term.TermHashtbl.find h t
+    with Not_found ->
+      let vs = Term.vars_of_term t in
+      Term.TermHashtbl.add h t vs;
+      vs
+
+
 (* Collect literals from a horn clause body *)
 let rec literals_of_body accum = function
 
@@ -497,7 +509,7 @@ let remove_trivial_eq term =
 let cluster_lets l =
   let clusters, last, _ =
     List.fold_left (fun (acc, cluster, currv) (v, t) ->
-        let tvs = Term.vars_of_term t in
+        let tvs = memo_vars_of_term t in
         if VS.is_empty (VS.inter tvs currv) then
           acc, (v, t) :: cluster, VS.add v currv
         else
@@ -538,7 +550,7 @@ let add_dep existential_vars term acc =
       s == Symbol.s_eq &&
       not (Type.equal_types (Term.type_of_term t1) Type.t_bool) ->
     let d = List.filter (fun v ->
-        Var.VarSet.mem v (Term.vars_of_term (Term.construct term)))
+        Var.VarSet.mem v (memo_vars_of_term (Term.construct term)))
         existential_vars in
     if d = [] then List.concat acc
     else List.concat ([d, Term.construct term] :: acc)
@@ -654,33 +666,42 @@ let solve_eqs_subterm existential_vars term =
     (solve_existential_order (dependencies existential_vars term)) term
 
 
+
 (* Remove as much existential variables as possible of a subterm by solving its
    equations. *)
 let rec solve_eqs existential_vars term =
-  let t' = Term.destruct term in
-  match t' with
-  | Term.T.App (s, l) when s == Symbol.s_and ->
 
-    let l' = List.map (fun st ->
-        let vst = VS.inter (Term.vars_of_term st) existential_vars in
-        let unique_evars = List.fold_left (fun vst ot ->
-            if ot == st then vst
-            else VS.diff vst (Term.vars_of_term ot)
-          ) vst l in
-        (* eprintf "UNIQUE vars %a --> [ " Term.pp_print_term st; *)
-        (* VS.iter (fun v -> eprintf "%a " Var.pp_print_var v) unique_evars; *)
-        (* eprintf "] @."; *)
-        solve_eqs unique_evars st
-      ) l in
+  if VS.is_empty existential_vars then term
+  else
 
-    let t' = Term.mk_and l' in
-    solve_eqs_subterm (VS.elements existential_vars) t'
+    let t' = Term.destruct term in
+    match t' with
+    | Term.T.App (s, l) when s == Symbol.s_and ->
 
-  | Term.T.App (s, l) ->
+      let l' = List.map (fun st ->
+          let vst = VS.inter (memo_vars_of_term st) existential_vars in
+          let unique_evars = try
+              List.fold_left (fun vst ot ->
+                  if VS.is_empty vst then raise Exit;
+                  if ot == st then vst
+                  else VS.diff vst (memo_vars_of_term ot)
+                ) vst l
+            with Exit -> VS.empty
+          in
+          (* eprintf "UNIQUE vars %a --> [ " Term.pp_print_term st; *)
+          (* VS.iter (fun v -> eprintf "%a " Var.pp_print_var v) unique_evars; *)
+          (* eprintf "] @."; *)
+          solve_eqs unique_evars st
+        ) l in
 
-    Term.mk_app s (List.map (solve_eqs existential_vars) l)
+      let t' = Term.mk_and l' in
+      solve_eqs_subterm (VS.elements existential_vars) t'
 
-  | _ -> Term.construct t'
+    | Term.T.App (s, l) ->
+
+      Term.mk_app s (List.map (solve_eqs existential_vars) l)
+
+    | _ -> Term.construct t'
 
 let solve_eqs existential_vars term =
   let sve =
@@ -708,7 +729,7 @@ let is_skolem_statevar v =
 (* Skolemize all existential variables that remain in the term. The newly
    introduced Skolem variables are also returned. *)
 let skolemize_remaining existential_vars term =
-  let vs = Term.vars_of_term term in
+  let vs = memo_vars_of_term term in
   let rem = List.filter (fun v -> VS.mem v vs) existential_vars in
   let skos, b_skos = List.fold_left (fun (skos, bskos) v ->
       let sko = Var.mk_state_var_instance
