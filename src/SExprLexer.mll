@@ -126,7 +126,7 @@ rule main buf = parse
   | unquoted_start unquoted* ("#|" | "|#") unquoted*
       { main_failure lexbuf "comment tokens in unquoted atom" }
   | "#" | unquoted_start unquoted* as str { STRING (HString.mk_hstring str) }
-  | '|' (unquoted* as str) '|' { STRING (HString.mk_hstring str) }
+  (* | '|' (unquoted* as str) '|' { STRING (HString.mk_hstring str) } *)
   | eof { EOF }
 
 and scan_string buf start = parse
