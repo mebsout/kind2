@@ -50,6 +50,7 @@ let headers () =
     (* Define functions for int / real conversions *)
     "(define to_int::(-> x::real (subtype (y::int) (and (<= y x) (< x (+ y 1))))))";
     "(define to_real::(-> x::int (subtype (y::real) (= y x))))";
+    "(define xor::(-> bool bool bool) (lambda (x::bool y::bool) (and (or x y) (not (and x y)))))";
   ] 
 
 
@@ -163,7 +164,7 @@ let string_symbol_list =
    ("=>", Symbol.mk_symbol `IMPLIES);
    ("and", Symbol.mk_symbol `AND);
    ("or", Symbol.mk_symbol `OR);
-   (* ("xor", Symbol.mk_symbol `XOR); *)
+   ("xor", Symbol.mk_symbol `XOR);
    ("=", Symbol.mk_symbol `EQ);
    (* ("distinct", Symbol.mk_symbol `DISTINCT); *)
    ("ite", Symbol.mk_symbol `ITE);
@@ -222,7 +223,7 @@ let rec pp_print_symbol_node ?arity ppf = function
   | `IMPLIES -> Format.pp_print_string ppf "=>"
   | `AND  -> Format.pp_print_string ppf "and"
   | `OR -> Format.pp_print_string ppf "or"
-  | `XOR -> failwith "xor not implemented for yices"
+  | `XOR -> Format.pp_print_string ppf "xor"
 
   | `EQ -> Format.pp_print_string ppf "="
   | `DISTINCT -> failwith "distinct not implemented for yices"
