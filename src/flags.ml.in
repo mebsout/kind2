@@ -586,6 +586,16 @@ let horn_relaxed_default = false
 
 (* ********** *) 
 
+type horn_sat = bool
+
+let horn_sat_of_bool b = b
+
+let bool_of_horn_sat s = s 
+
+let horn_sat_default = false
+
+(* ********** *) 
+
 let debug_default = []
 
 (* ********** *) 
@@ -655,6 +665,7 @@ type flags =
       mutable input_format : [`Default | input_format];
       mutable horn_simpl : horn_simpl;
       mutable horn_relaxed : horn_relaxed;
+      mutable horn_sat : horn_sat;
       mutable input_file : string option }
     
 (* Defaults for all flags *)
@@ -710,6 +721,7 @@ let flags =
     input_format = input_format_default;
     horn_simpl = horn_simpl_default;
     horn_relaxed = horn_relaxed_default;
+    horn_sat = horn_sat_default;
     input_file = None } 
 
 (* ********** *) 
@@ -1254,6 +1266,17 @@ let horn_relaxed_spec =
    Arg.Unit horn_relaxed_action, 
    "Deactivate linear checks for Horn clauses (not recommended).")
 
+(* ********** *) 
+
+let horn_sat_action o =
+  flags.horn_sat <- true;
+  flags.log_level <- L_off
+  
+let horn_sat_spec = 
+  ("--horn_sat", 
+   Arg.Unit horn_sat_action, 
+   "Output answer in the form sat/unsat.")
+
 (* ********************************************************************** *)
 (* Pretty-printing of flags                                               *)
 (* ********************************************************************** *)
@@ -1392,6 +1415,8 @@ let input_format () =
 let horn_simpl () = flags.horn_simpl
 
 let horn_relaxed () = flags.horn_relaxed
+
+let horn_sat () = flags.horn_sat
 
 (* ********************************************************************** *)
 (* Parsing of command-line options into flags                             *)
@@ -1556,6 +1581,9 @@ and speclist =
 
     (* Deactivate relaxedifications in Horn format *)
     horn_relaxed_spec;
+
+    (* sat/unsat mode *)
+    horn_sat_spec;
     
     (* Display help *)
     ("-help", 

@@ -269,6 +269,12 @@ val is_disproved : t -> string -> bool
 (** Return true if all properties are either valid or invalid *)
 val all_props_proved : t -> bool
 
+(** Return true if all properties are valid *)
+val all_props_valid : t -> bool
+
+(** Return true if there exists an invalid property *)
+val exists_prop_invalid : t -> bool
+
 (** Apply [f] to all uninterpreted function symbols of the transition
     system *)
 val iter_state_var_declarations : t -> (UfSymbol.t -> unit) -> unit 

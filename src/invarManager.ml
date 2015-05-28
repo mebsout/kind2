@@ -127,6 +127,21 @@ let handle_events trans_sys =
 
   ()
 
+
+(* Check if we are finished *)
+let finished ts =
+
+  (Flags.horn_sat () &&
+
+   (* if we are in sat mode, stop as soon as one preoperty is invalid*)
+   (TransSys.exists_prop_invalid ts || TransSys.all_props_valid ts))
+
+  ||
+  
+  TransSys.all_props_proved ts
+
+
+
 (* Polling loop *)
 let rec loop done_at child_pids trans_sys = 
 
@@ -134,8 +149,7 @@ let rec loop done_at child_pids trans_sys =
 
   let done_at' =
 
-    (* All properties proved? *)
-    if TransSys.all_props_proved trans_sys then 
+    if finished trans_sys then 
 
       (
 
@@ -151,6 +165,16 @@ let rec loop done_at child_pids trans_sys =
                 "<Done> All properties proved or disproved in %.3fs."
                 (Stat.get_float Stat.total_time);
 
+              if Flags.horn_sat () then begin
+
+                if TransSys.exists_prop_invalid trans_sys then
+                  Format.printf "unsat@.";
+
+                if TransSys.all_props_valid trans_sys then
+                  Format.printf "sat@.";
+                
+              end;    
+              
               Event.terminate ();
 
               Some (Unix.gettimeofday ())
@@ -192,7 +216,7 @@ let rec loop done_at child_pids trans_sys =
       handle_events trans_sys ;
 
       (* All properties proved? *)
-      if TransSys.all_props_proved trans_sys then
+      if finished trans_sys then
         Event.terminate ()
 
     ) 

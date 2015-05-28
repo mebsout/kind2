@@ -237,6 +237,10 @@ val horn_simpl : unit -> horn_simpl
 type horn_relaxed = bool
 val horn_relaxed : unit -> horn_relaxed
 
+(** Produce answers in sat/unsat mode *)
+type horn_sat = bool
+val horn_sat : unit -> horn_sat
+
 (** Input file *)
 val input_file : unit -> string 
 

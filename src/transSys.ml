@@ -1076,6 +1076,30 @@ let all_props_proved t =
        with Not_found -> false)
     t.properties
 
+(* Return true if all properties are valid *)
+let all_props_valid t =
+  List.for_all
+    (fun p -> 
+       try 
+         (match p.prop_status with
+          | PropInvariant -> true
+          | _ -> false)
+       with Not_found -> false)
+    t.properties
+
+
+(* Return true if there exists an invalid property *)
+let exists_prop_invalid t =
+  List.exists
+    (fun p -> 
+       try 
+         (match p.prop_status with
+          | PropFalse _ -> true
+          | _ -> false)
+       with Not_found -> false)
+    t.properties
+
+
 (* Return declarations for uninterpreted symbols *)
 let uf_symbols_of_trans_sys { state_vars } = 
   List.map StateVar.uf_symbol_of_state_var state_vars
